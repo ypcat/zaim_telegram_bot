@@ -30,8 +30,9 @@ def main():
                 name = update.message.from_user.name
                 voice = update.message.voice
                 print name, chat_id, text, voice
-                if text == 'Cancel':
-                    pass
+                if text.lower() == 'cancel':
+                    markup = telegram.ReplyKeyboardHide()
+                    bot.sendMessage(chat_id=chat_id, text='Cancelled', reply_markup=markup)
                 elif text.lower().startswith('cat'):
                     text = u' '.join(sorted(cats.keys(), key=cats.get))
                     bot.sendMessage(chat_id=chat_id, text=text)
@@ -39,11 +40,12 @@ def main():
                     data = parse(text)
                     if data:
                         print z.payment(**data)
-                        bot.sendMessage(chat_id=chat_id, text='Entered')
+                        markup = telegram.ReplyKeyboardHide()
+                        bot.sendMessage(chat_id=chat_id, text='Entered', reply_markup=markup)
                 elif voice:
                     bot.sendMessage(chat_id=chat_id, text='Processing voice')
                     kb = [[t] for t in dictate(bot.getFile(voice.file_id), config)] + [['Cancel']]
-                    markup = telegram.ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
+                    markup = telegram.ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True, selective=True)
                     bot.sendMessage(chat_id=chat_id, text='Choose result', reply_markup=markup)
         except KeyboardInterrupt:
             break
