@@ -7,22 +7,51 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 
+import pyquery
+import requests
 import telegram
 import zaim
+
+def auth(z, config):
+    try:
+        z.verify()
+    except:
+        traceback.print_exc()
+        print 'Renew oauth token'
+        request_token = z.get_request_token('http://example.com')
+        auth_url = 'https://www.zaim.net/users/auth?oauth_token=' + request_token['oauth_token']
+        s = requests.Session()
+        r = s.get(auth_url)
+        q = pyquery.PyQuery(r.text)
+        data = {i.name: i.value for i in q('input') if i.name != 'disagree'}
+        data['data[User][email]'] = config['zaim']['email']
+        data['data[User][password]'] = config['zaim']['password']
+        r = s.post('https://auth.zaim.net/users/auth', data=data)
+        q = pyquery.PyQuery(r.text)
+        oauth_verifier = q('code').text()
+        access_token = z.get_access_token(oauth_verifier)
+        z = zaim.Api(
+            consumer_key = config['zaim']['consumer_key'],
+            consumer_secret = config['zaim']['consumer_secret'],
+            access_token = access_token['oauth_token'],
+            access_token_secret = access_token['oauth_token_secret'],
+        )
+    return z
 
 def main():
     sys.stdout = codecs.getwriter('utf8')(sys.stdout)
     sys.stderr = codecs.getwriter('utf8')(sys.stderr)
     config = json.load(open(os.path.join(os.path.dirname(__file__), 'config.json')))
     bot = telegram.Bot(config['telegram']['token'])
-    z = zaim.Api(**config['zaim'])
-    z.verify()
+    z = zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
     update_id = 0
     print bot.getMe()
     while True:
         try:
+            z = auth(z, config)
             for update in bot.getUpdates(offset=update_id+1, timeout=60):
                 update_id = update.update_id
                 chat_id = update.message.chat_id
@@ -38,10 +67,13 @@ def main():
                     bot.sendMessage(chat_id=chat_id, text=text)
                 elif text:
                     data = parse(text)
+                    print data
                     if data:
                         print z.payment(**data)
                         markup = telegram.ReplyKeyboardHide()
-                        bot.sendMessage(chat_id=chat_id, text='Entered', reply_markup=markup)
+                        cat = cats.keys()[cats.values().index(data['genre_id'])]
+                        text = u"Entered %s %s $%d" % (cat, data['place'], data['amount'])
+                        bot.sendMessage(chat_id=chat_id, text=text, reply_markup=markup)
                 elif voice:
                     bot.sendMessage(chat_id=chat_id, text='Processing voice')
                     kb = [[t] for t in dictate(bot.getFile(voice.file_id), config)] + [['Cancel']]
@@ -51,6 +83,7 @@ def main():
             break
         except:
             traceback.print_exc()
+            time.sleep(60)
 
 cats = {
     u'食物': '10101', u'下午茶': '10102', u'早餐': '10103', u'午餐': '10104', u'晚餐': '10105',
