@@ -22,7 +22,7 @@ def auth(z, config):
         traceback.print_exc()
         print 'Renew oauth token'
         request_token = z.get_request_token('http://example.com')
-        auth_url = 'https://www.zaim.net/users/auth?oauth_token=' + request_token['oauth_token']
+        auth_url = 'https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token']
         s = requests.Session()
         r = s.get(auth_url)
         q = pyquery.PyQuery(r.text)
