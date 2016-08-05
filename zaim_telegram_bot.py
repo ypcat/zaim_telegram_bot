@@ -17,7 +17,7 @@ import zaim
 
 def auth(z, config):
     try:
-        z.verify()
+        assert not z.verify()['error']
     except:
         traceback.print_exc()
         print 'Renew oauth token'
