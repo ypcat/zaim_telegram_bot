@@ -41,14 +41,23 @@ def auth(z, config):
         )
     return z
 
+def load_config():
+    return json.load(open(os.path.join(os.path.dirname(__file__), 'config.json')))
+
+def init_telegram(config):
+    return telegram.Bot(config['telegram']['token'])
+
+def init_zaim(config):
+    return zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
+
 def main():
     sys.stdout = codecs.getwriter('utf8')(sys.stdout)
     sys.stderr = codecs.getwriter('utf8')(sys.stderr)
-    config = json.load(open(os.path.join(os.path.dirname(__file__), 'config.json')))
-    bot = telegram.Bot(config['telegram']['token'])
-    z = zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
+    config = load_config()
+    bot = init_telegram(config)
+    z = init_zaim(config)
     update_id = 0
-    print bot.getMe()
+    #print bot.getMe()
     while True:
         try:
             for update in bot.getUpdates(offset=update_id+1, timeout=60):
@@ -59,7 +68,8 @@ def main():
                 voice = update.message.voice
                 print name, chat_id, text, voice
                 if text.lower() == 'cancel':
-                    markup = telegram.ReplyKeyboardHide()
+                    #markup = telegram.ReplyKeyboardHide()
+                    markup = None
                     bot.sendMessage(chat_id=chat_id, text='Cancelled', reply_markup=markup)
                 elif text.lower().startswith('cat'):
                     text = u' '.join(sorted(cats.keys(), key=cats.get))
@@ -70,15 +80,16 @@ def main():
                     if data:
                         z = auth(z, config)
                         print z.payment(**data)
-                        markup = telegram.ReplyKeyboardHide()
+                        #markup = telegram.ReplyKeyboardHide()
+                        markup = None
                         cat = cats.keys()[cats.values().index(data['genre_id'])]
                         text = u"Entered %s %s $%d" % (cat, data['place'], data['amount'])
                         bot.sendMessage(chat_id=chat_id, text=text, reply_markup=markup)
-                elif voice:
-                    bot.sendMessage(chat_id=chat_id, text='Processing voice')
-                    kb = [[t] for t in dictate(bot.getFile(voice.file_id), config)] + [['Cancel']]
-                    markup = telegram.ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
-                    bot.sendMessage(chat_id=chat_id, text='Choose result', reply_markup=markup)
+                #elif voice:
+                #    bot.sendMessage(chat_id=chat_id, text='Processing voice')
+                #    kb = [[t] for t in dictate(bot.getFile(voice.file_id), config)] + [['Cancel']]
+                #    markup = telegram.ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
+                #    bot.sendMessage(chat_id=chat_id, text='Choose result', reply_markup=markup)
         except KeyboardInterrupt:
             break
         except:
@@ -133,6 +144,11 @@ def dictate(file, config):
             for alt in result['alternative']:
                 print alt['transcript']
                 yield alt['transcript']
+
+def test():
+    config = load_config()
+    z = init_zaim(config)
+    print auth(z, config)
 
 if __name__ == '__main__':
     main()
