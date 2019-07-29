@@ -116,15 +116,18 @@ cats = {
 }
 
 def parse(text):
-    pat = re.compile(u"(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
+    pat = re.compile(u"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
     m = pat.match(text)
     if m:
-        cat, place, amount = m.groups()
+        date, cat, place, amount = m.groups()
+        if date:
+            date = re.sub(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', date)
         return {
             'category_id': cats[cat][:3],
             'genre_id': cats[cat],
             'amount': int(amount),
-            'place': place
+            'place': place,
+            'date': date
         }
 
 def dictate(file, config):
