@@ -9,11 +9,16 @@ import subprocess
 import sys
 import time
 import traceback
+import logging
 
 import pyquery
 import requests
-import telegram
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
 import zaim
+
+logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO)
 
 def auth(z, config):
     try:
@@ -44,57 +49,52 @@ def auth(z, config):
 def load_config():
     return json.load(open(os.path.join(os.path.dirname(__file__), 'config.json')))
 
-def init_telegram(config):
-    return telegram.Bot(config['telegram']['token'])
-
 def init_zaim(config):
     return zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
 
+def categories(bot, update):
+    logging.info('/cat')
+    text = u' '.join(sorted(cats.keys(), key=cats.get))
+    bot.send_message(chat_id=update.message.chat_id, text=text)
+
+def handler(bot, update):
+    global config, z
+    chat_id = update.message.chat_id
+    text = update.message.text
+    name = update.message.from_user.name
+    logging.info('%s(%s): %s', name, chat_id, text)
+    if text:
+        data = parse(text)
+        logging.info('data: %s', data)
+        if data:
+            z = auth(z, config)
+            resp = z.payment(**data)
+            logging.info('payment: %s', resp)
+            cat = cats.keys()[cats.values().index(data['genre_id'])]
+            text = u"Entered %s %s $%d\n/cancel_%d" % (
+                    cat, data['place'], data['amount'], resp['money']['id'])
+            bot.sendMessage(chat_id=chat_id, text=text)
+
+def cancel(bot, update, groups):
+    global config, z
+    money_id = int(groups[0])
+    logging.info('cancel %s', money_id)
+    z = auth(z, config)
+    z.delete(mode='payment', money_id=money_id)
+    text = 'cancel %d' % money_id
+    bot.sendMessage(chat_id=update.message.chat_id, text=text)
+
 def main():
-    sys.stdout = codecs.getwriter('utf8')(sys.stdout)
-    sys.stderr = codecs.getwriter('utf8')(sys.stderr)
+    global config, z
     config = load_config()
-    bot = init_telegram(config)
+    updater = Updater(token=config['telegram']['token'])
+    dispatcher = updater.dispatcher
     z = init_zaim(config)
-    update_id = 0
-    #print bot.getMe()
-    while True:
-        try:
-            for update in bot.getUpdates(offset=update_id+1, timeout=60):
-                update_id = update.update_id
-                chat_id = update.message.chat_id
-                text = update.message.text
-                name = update.message.from_user.name
-                voice = update.message.voice
-                print name, chat_id, text, voice
-                if text.lower() == 'cancel':
-                    #markup = telegram.ReplyKeyboardHide()
-                    markup = None
-                    bot.sendMessage(chat_id=chat_id, text='Cancelled', reply_markup=markup)
-                elif text.lower().startswith('cat'):
-                    text = u' '.join(sorted(cats.keys(), key=cats.get))
-                    bot.sendMessage(chat_id=chat_id, text=text)
-                elif text:
-                    data = parse(text)
-                    print data
-                    if data:
-                        z = auth(z, config)
-                        print z.payment(**data)
-                        #markup = telegram.ReplyKeyboardHide()
-                        markup = None
-                        cat = cats.keys()[cats.values().index(data['genre_id'])]
-                        text = u"Entered %s %s $%d" % (cat, data['place'], data['amount'])
-                        bot.sendMessage(chat_id=chat_id, text=text, reply_markup=markup)
-                #elif voice:
-                #    bot.sendMessage(chat_id=chat_id, text='Processing voice')
-                #    kb = [[t] for t in dictate(bot.getFile(voice.file_id), config)] + [['Cancel']]
-                #    markup = telegram.ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
-                #    bot.sendMessage(chat_id=chat_id, text='Choose result', reply_markup=markup)
-        except KeyboardInterrupt:
-            break
-        except:
-            traceback.print_exc()
-            time.sleep(60)
+    dispatcher.add_handler(CommandHandler('cat', categories))
+    dispatcher.add_handler(RegexHandler(r'/cancel_(\d+)', cancel, pass_groups=True))
+    dispatcher.add_handler(MessageHandler(Filters.text, handler))
+    logging.info('Start polling')
+    updater.start_polling()
 
 cats = {
     u'食物':'10101', u'點心':'10102', u'早餐':'10103', u'午餐':'10104', u'晚餐':'10105',
@@ -129,24 +129,6 @@ def parse(text):
             'place': place,
             'date': date
         }
-
-def dictate(file, config):
-    file_url = file.file_path
-    key = config['google']['key']
-    api_url = 'https://www.google.com/speech-api/v2/recognize?output=json&lang=zh-tw&key=' + key
-    cmd = '|'.join([
-        "curl '{file_url}'",
-        "opusdec --rate 16000 - -",
-        "curl '{api_url}' -H 'Content-Type: audio/l16; rate=16000' --data-binary @-"
-    ]).format(**locals())
-    print cmd
-    out = subprocess.check_output(cmd, shell=1)
-    print out.decode('utf8')
-    for line in out.splitlines():
-        for result in json.loads(line)['result']:
-            for alt in result['alternative']:
-                print alt['transcript']
-                yield alt['transcript']
 
 def test():
     config = load_config()
