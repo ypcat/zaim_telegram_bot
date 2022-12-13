@@ -57,6 +57,10 @@ def categories(bot, update):
     text = u' '.join(sorted(cats.keys(), key=cats.get))
     bot.send_message(chat_id=update.message.chat_id, text=text)
 
+def alias(bot, update):
+    logging.info('/alias %s', update.message.text)
+    bot.send_message(chat_id=update.message.chat_id, text=text)
+
 def handler(bot, update):
     global config, z
     chat_id = update.message.chat_id
@@ -97,6 +101,7 @@ def main():
     dispatcher = updater.dispatcher
     z = init_zaim(config)
     dispatcher.add_handler(CommandHandler('cat', categories))
+    dispatcher.add_handler(CommandHandler('alias', alias))
     dispatcher.add_handler(RegexHandler(r'/cancel_(\d+)', cancel, pass_groups=True))
     dispatcher.add_handler(MessageHandler(Filters.text, handler))
     logging.info('Start polling')
@@ -124,7 +129,7 @@ cats = {
     u'年金':'11301', u'所得稅':'11302', u'營業稅':'11305',
     u'旅行':'11401', u'房屋':'11402', u'汽車':'11403', u'機車':'11404', u'結婚':'11405', u'生產':'11406', u'看護':'11407',
     u'匯款':'19901', u'零用':'19902', u'預付':'19904', u'提款':'19906', u'儲值':'19908', u'其他':'19909',
-    u'轉帳':'19901',
+    u'轉帳':'19901', u'代買':'19904', u'代購':'19904',
 
     # income
     u'薪水': '11',

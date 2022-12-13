@@ -64,3 +64,8 @@ target/
 .ipynb_checkpoints
 
 *.swp
+
+2022*.txt
+2022*.csv
+oauth_token.json
+
