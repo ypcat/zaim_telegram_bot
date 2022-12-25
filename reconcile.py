@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import argparse
 import csv
 import re
 import sys
@@ -10,7 +11,8 @@ def reconcile(fn_txt, fn_csv):
         row[0] = row[0][5:7] + '/' + row[0][8:10]
         row[2] = int(row[2])
         right.append(row)
-    print(right)
+    for r in sorted(right):
+        print(r)
     matched = []
     unmatched = []
     for line in open(fn_txt):
@@ -35,7 +37,11 @@ def reconcile(fn_txt, fn_csv):
         print(row)
 
 def main():
-    reconcile(sys.argv[1], sys.argv[2])
+    parser = argparse.ArgumentParser()
+    parser.add_argument('txt')
+    parser.add_argument('csv')
+    args = parser.parse_args()
+    reconcile(args.txt, args.csv)
 
 def test():
     reconcile('2022**_****.txt', '20221213_zaim.csv')
