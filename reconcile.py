@@ -12,7 +12,7 @@ def reconcile(fn_txt, fn_csv):
         row[2] = int(row[2])
         right.append(row)
     for r in sorted(right):
-        print(r)
+        print(' '.join(str(c) for c in r))
     matched = []
     unmatched = []
     for line in open(fn_txt):
@@ -29,12 +29,14 @@ def reconcile(fn_txt, fn_csv):
             matched.append([date, place, amount, match])
         else:
             unmatched.append([date, place, amount])
+    print
     print('matched:')
-    for row in matched:
-        print(row)
+    for r in matched:
+        print(' '.join(str(c) for c in r))
+    print
     print('unmatched:')
-    for row in unmatched:
-        print(row)
+    for r in unmatched:
+        print(' '.join(str(c) for c in r))
 
 def main():
     parser = argparse.ArgumentParser()
