@@ -103,7 +103,7 @@ def month(bot, update):
     z = auth(z, config)
     r = z.money(mode='payment', start_date=start.isoformat(), end_date=today.isoformat())
     amount = sum(i['amount'] for i in r['money'])
-    text = '%s to %s total %d' % (start.isoformat(), today.isoformat(), amount)
+    text = '%d-%02d: %d' % (today.year, today.month, amount)
     bot.sendMessage(chat_id=update.message.chat_id, text=text)
 
 def main():
