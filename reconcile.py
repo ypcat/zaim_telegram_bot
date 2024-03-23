@@ -2,10 +2,18 @@
 
 import argparse
 import csv
+import glob
+import os
 import re
 import sys
 
+def latest(pat):
+    return sorted(glob.glob(pat), key=os.path.getmtime)[-1]
+
 def reconcile(fn_txt, fn_csv):
+    fn_txt = fn_txt or latest('*.txt')
+    fn_csv = fn_csv or latest('*.csv')
+    print(fn_txt, fn_csv)
     right = []
     for row in csv.reader(open(fn_csv)):
         row[0] = row[0][5:7] + '/' + row[0][8:10]
@@ -40,8 +48,8 @@ def reconcile(fn_txt, fn_csv):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('txt')
-    parser.add_argument('csv')
+    parser.add_argument('txt', nargs='?')
+    parser.add_argument('csv', nargs='?')
     args = parser.parse_args()
     reconcile(args.txt, args.csv)
 

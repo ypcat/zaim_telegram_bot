@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import codecs
+import datetime
 import json
 import os
 import re
@@ -84,6 +85,7 @@ def handler(bot, update):
             text = u"Entered %s %s $%d\n/cancel_%d" % (
                     cat, data['place'], data['amount'], resp['money']['id'])
             bot.sendMessage(chat_id=chat_id, text=text)
+            month(bot, update)
 
 def cancel(bot, update, groups):
     global config, z
@@ -94,6 +96,16 @@ def cancel(bot, update, groups):
     text = 'cancel %d' % money_id
     bot.sendMessage(chat_id=update.message.chat_id, text=text)
 
+def month(bot, update):
+    global config, z
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=today.day - 1)
+    z = auth(z, config)
+    r = z.money(mode='payment', start_date=start.isoformat(), end_date=today.isoformat())
+    amount = sum(i['amount'] for i in r['money'])
+    text = '%s to %s total %d' % (start.isoformat(), today.isoformat(), amount)
+    bot.sendMessage(chat_id=update.message.chat_id, text=text)
+
 def main():
     global config, z
     config = load_config()
@@ -101,6 +113,7 @@ def main():
     dispatcher = updater.dispatcher
     z = init_zaim(config)
     dispatcher.add_handler(CommandHandler('cat', categories))
+    dispatcher.add_handler(CommandHandler('month', month))
     dispatcher.add_handler(CommandHandler('alias', alias))
     dispatcher.add_handler(RegexHandler(r'/cancel_(\d+)', cancel, pass_groups=True))
     dispatcher.add_handler(MessageHandler(Filters.text, handler))

@@ -65,7 +65,7 @@ target/
 
 *.swp
 
-2022*.txt
-2022*.csv
+20*.txt
+20*.csv
 oauth_token.json
 
