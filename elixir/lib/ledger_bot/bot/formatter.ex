@@ -6,20 +6,13 @@ defmodule LedgerBot.Bot.Formatter do
   def transaction_summary(data) do
     type_icon = if data[:type] == "income", do: "💰", else: "💸"
     cat = data[:category_name] || "?"
-    subcat = if data[:subcategory_name], do: " / #{data[:subcategory_name]}", else: ""
+    subcat = if data[:subcategory_name], do: "/#{data[:subcategory_name]}", else: ""
     date = data[:date] || Date.utc_today()
     place = data[:place] || "?"
     amt = amount(data[:amount] || 0)
-    note_line = if data[:note], do: "\n備註：#{data[:note]}", else: ""
+    note = if data[:note], do: "\n📝 #{data[:note]}", else: ""
 
-    """
-    #{type_icon} *新增記帳*
-
-    📂 分類：#{cat}#{subcat}
-    💰 金額：#{amt}
-    🏪 地點：#{place}
-    📅 日期：#{date}#{note_line}
-    """
+    "#{type_icon} #{cat}#{subcat}  #{amt}\n🏪 #{place}  📅 #{date}#{note}"
   end
 
   def transaction_row(txn, idx) do

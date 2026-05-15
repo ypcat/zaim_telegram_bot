@@ -1,6 +1,8 @@
 defmodule LedgerBot.Bot.Keyboard do
   import ExGram.Dsl.Keyboard, only: [inline_button: 2]
 
+  @page_size 8
+
   def type_buttons do
     ExGram.Dsl.create_inline_keyboard([
       [btn("💸 支出", "type:expense"), btn("💰 收入", "type:income")],
@@ -8,10 +10,15 @@ defmodule LedgerBot.Bot.Keyboard do
     ])
   end
 
-  def category_grid(categories, type_prefix \\ "cat") do
+  def category_grid_paged(categories, page, type_prefix \\ "cat") do
+    total = length(categories)
+    total_pages = max(1, div(total + @page_size - 1, @page_size))
+    page = min(max(page, 1), total_pages)
+
     rows =
       categories
-      |> Enum.chunk_every(4)
+      |> Enum.slice((page - 1) * @page_size, @page_size)
+      |> Enum.chunk_every(2)
       |> Enum.map(fn row ->
         Enum.map(row, fn cat ->
           label = if cat.icon, do: "#{cat.icon} #{cat.name}", else: cat.name
@@ -19,31 +26,20 @@ defmodule LedgerBot.Bot.Keyboard do
         end)
       end)
 
-    ExGram.Dsl.create_inline_keyboard(rows ++ [[btn("❌ 取消", "cancel")]])
+    nav = nav_row(page, total_pages, "cat_page")
+    extras = if nav == [], do: [], else: [nav]
+    ExGram.Dsl.create_inline_keyboard(rows ++ extras ++ [[btn("❌ 取消", "cancel")]])
   end
 
   def subcategory_grid(subcats, _parent_id) do
     rows =
       subcats
-      |> Enum.chunk_every(4)
+      |> Enum.chunk_every(2)
       |> Enum.map(fn row ->
         Enum.map(row, fn cat -> btn(cat.name, "subcat:#{cat.id}") end)
       end)
 
-    skip_row = [btn("⏭ 略過", "subcat:skip"), btn("❌ 取消", "cancel")]
-    ExGram.Dsl.create_inline_keyboard(rows ++ [skip_row])
-  end
-
-  def numpad(current_amount) do
-    display = if current_amount == "", do: "0", else: current_amount
-
-    ExGram.Dsl.create_inline_keyboard([
-      [btn("7", "num:7"), btn("8", "num:8"), btn("9", "num:9")],
-      [btn("4", "num:4"), btn("5", "num:5"), btn("6", "num:6")],
-      [btn("1", "num:1"), btn("2", "num:2"), btn("3", "num:3")],
-      [btn(".", "num:."), btn("0", "num:0"), btn("⌫", "num:back")],
-      [btn("✓ #{display}", "num:confirm")]
-    ])
+    ExGram.Dsl.create_inline_keyboard(rows ++ [[btn("⏭ 略過", "subcat:skip"), btn("❌ 取消", "cancel")]])
   end
 
   def date_buttons do
@@ -59,8 +55,8 @@ defmodule LedgerBot.Bot.Keyboard do
   def confirm_buttons do
     ExGram.Dsl.create_inline_keyboard([
       [btn("✅ 確認", "confirm:yes"), btn("❌ 取消", "cancel")],
-      [btn("✏️ 改金額", "edit_field:amount"), btn("✏️ 改分類", "edit_field:category")],
-      [btn("✏️ 改地點", "edit_field:place"), btn("✏️ 改日期", "edit_field:date")]
+      [btn("✏️ 金額", "edit_field:amount"), btn("✏️ 分類", "edit_field:category"),
+       btn("✏️ 地點", "edit_field:place"), btn("✏️ 日期", "edit_field:date")]
     ])
   end
 
@@ -75,12 +71,14 @@ defmodule LedgerBot.Bot.Keyboard do
     if Enum.empty?(buttons), do: nil, else: ExGram.Dsl.create_inline_keyboard([buttons])
   end
 
-  def pagination(page, total_pages, prefix) do
+  defp nav_row(page, total_pages, prefix) when total_pages > 1 do
     prev = if page > 1, do: [btn("◀", "#{prefix}:#{page - 1}")], else: []
     info = [btn("#{page}/#{total_pages}", "noop")]
     next = if page < total_pages, do: [btn("▶", "#{prefix}:#{page + 1}")], else: []
-    ExGram.Dsl.create_inline_keyboard([prev ++ info ++ next])
+    prev ++ info ++ next
   end
+
+  defp nav_row(_, _, _), do: []
 
   defp btn(text, callback_data), do: inline_button(text, callback_data: callback_data)
 end
