@@ -1,0 +1,12 @@
+[project]
+name = "zaim-telegram-bot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pyquery>=2.0.1",
+    "python-telegram-bot<20",
+    "setuptools<82",
+    "zaim>=0.2.3",
+]

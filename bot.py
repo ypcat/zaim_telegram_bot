@@ -1,0 +1,212 @@
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#     "pyquery",
+#     "requests",
+#     "python-telegram-bot>=13.0,<20.0",
+#     "zaim",
+#     "setuptools<82",
+# ]
+# ///
+
+import datetime
+import json
+import os
+import re
+import traceback
+import logging
+
+import pyquery
+import requests
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+import zaim
+
+logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO)
+
+cats = {
+    u'食物':'10101', u'點心':'10102', u'早餐':'10103', u'午餐':'10104', u'晚餐':'10105',
+    u'買菜':'10101', u'咖啡':'10102', u'下午茶': '10102',
+    u'雜貨':'10201', u'雜物':'10201',
+    u'電車':'10301', u'計程車':'10302', u'公車':'10303', u'機票':'10304',
+    u'行動':'10401', u'市話':'10402', u'網路':'10403', u'電視':'10404', u'快遞':'10405', u'郵票':'10406',
+    u'手機':'10401', u'電話':'10402',
+    u'水費':'10501', u'電費':'10502', u'瓦斯':'10503',
+    u'房租':'10601', u'房貸':'10602', u'家具':'10603', u'家電':'10604', u'裝潢':'10605', u'房屋險':'10606',
+    u'電器':'10604',
+    u'請客':'10701', u'禮物':'10702', u'紅包':'10703',
+    u'休閒':'10801', u'展覽':'10802', u'電影':'10803', u'音樂':'10804', u'漫畫':'10805', u'書籍':'10806', u'遊戲':'10807',
+    u'書':'10806',
+    u'上課':'10901', u'報紙':'10902', u'參考書':'10903', u'考試':'10904', u'學費':'10905', u'補習':'10907',
+    u'看病': '11001', u'掛號':'11001', u'藥物':'11002', u'保險':'11003', u'醫療險':'11004',
+    u'藥':'11002',
+    u'衣服':'11101', u'配件':'11102', u'內衣':'11103', u'健身':'11104', u'理髮':'11105', u'化妝品':'11106', u'美容':'11107', u'洗衣':'11108',
+    u'剪髮':'11105',
+    u'加油':'11201', u'停車':'11202', u'汽車險':'11203', u'汽車稅':'11204', u'車貸':'11205', u'駕訓班':'11206', u'過路費':'11207',
+    u'年金':'11301', u'所得稅':'11302', u'營業稅':'11305',
+    u'旅行':'11401', u'房屋':'11402', u'汽車':'11403', u'機車':'11404', u'結婚':'11405', u'生產':'11406', u'看護':'11407',
+    u'匯款':'19901', u'零用':'19902', u'預付':'19904', u'提款':'19906', u'儲值':'19908', u'其他':'19909',
+    u'轉帳':'19901', u'代買':'19904', u'代購':'19904',
+
+    # income
+    u'薪水': '11',
+    #u'預付': '12',
+    u'獎金': '13',
+    #u'額外營收': '14',
+    #u'營業收入': '15',
+    u'營收': '15',
+    u'收錢': '19',
+    u'收款': '19',
+}
+
+cats_income = {
+    u'薪水': '11',
+    #u'預付': '12',
+    u'獎金': '13',
+    #u'額外營收': '14',
+    #u'營業收入': '15',
+    u'營收': '15',
+    u'收錢': '19',
+    u'收款': '19',
+}
+
+def auth(z, config):
+    try:
+        assert not z.verify()['error']
+    except Exception:
+        traceback.print_exc()
+        print('Renew oauth token')
+        request_token = z.get_request_token('http://example.com')
+        auth_url = 'https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token']
+        s = requests.Session()
+        r = s.get(auth_url)
+        q = pyquery.PyQuery(r.text)
+        data = {i.name: i.value for i in q('input') if i.name != 'disagree'}
+        data['data[User][email]'] = config['zaim']['email']
+        data['data[User][password]'] = config['zaim']['password']
+        r = s.post('https://auth.zaim.net/users/auth', data=data)
+        q = pyquery.PyQuery(r.text)
+        oauth_verifier = q('code').text()
+        access_token = z.get_access_token(oauth_verifier)
+        z = zaim.Api(
+            consumer_key = config['zaim']['consumer_key'],
+            consumer_secret = config['zaim']['consumer_secret'],
+            access_token = access_token['oauth_token'],
+            access_token_secret = access_token['oauth_token_secret'],
+        )
+    return z
+
+def load_config():
+    with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
+        return json.load(f)
+
+def init_zaim(config):
+    return zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
+
+def categories(update, context):
+    logging.info('/cat')
+    text = ' '.join(sorted(cats.keys(), key=cats.get))
+    context.bot.send_message(chat_id=update.message.chat_id, text=text)
+
+def alias(update, context):
+    logging.info('/alias %s', update.message.text)
+    # Fixed a bug from original: 'text' was undefined here
+    context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
+
+def handler(update, context):
+    global config, z
+    chat_id = update.message.chat_id
+    text = update.message.text
+    name = update.message.from_user.name
+    logging.info('%s(%s): %s', name, chat_id, text)
+    if text:
+        data = parse(text)
+        logging.info('data: %s', data)
+        if data:
+            z = auth(z, config)
+            mode = data.pop('mode')
+            if mode == 'income':
+                func = z.income
+            else:
+                func = z.payment
+            resp = func(**data)
+            logging.info('%s: %s', mode, resp)
+            
+            genre_or_category = data.get('genre_id', data['category_id']) 
+            
+            # Python 3 equivalent of getting a dict key by value
+            cat_list = list(cats.keys())
+            val_list = list(cats.values())
+            cat = cat_list[val_list.index(genre_or_category)]
+            
+            reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
+            context.bot.send_message(chat_id=chat_id, text=reply_text)
+            month(update, context)
+
+def cancel(update, context):
+    global config, z
+    # RegexHandler group extraction modernized for v13
+    money_id = int(context.match.group(1)) 
+    logging.info('cancel %s', money_id)
+    z = auth(z, config)
+    z.delete(mode='payment', money_id=money_id)
+    reply_text = f'cancel {money_id}'
+    context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
+
+def month(update, context):
+    global config, z
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=today.day - 1)
+    z = auth(z, config)
+    r = z.money(mode='payment', start_date=start.isoformat(), end_date=today.isoformat())
+    amount = sum(i['amount'] for i in r['money'])
+    reply_text = f'{today.year}-{today.month:02d}: {amount}'
+    context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
+
+def parse(text):
+    pat = re.compile(r"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
+    m = pat.match(text)
+    if m:
+        date, cat, place, amount = m.groups()
+        if date:
+            date = re.sub(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', date)
+        logging.info('foo: %r', (cat, cats_income, cat in cats_income))
+        if cat in cats_income:
+            return {
+                'category_id': cats_income[cat],
+                'amount': int(amount),
+                'place': place,
+                'date': date,
+                'mode': 'income'
+            }
+        else:
+            return {
+                'category_id': cats[cat][:3],
+                'genre_id': cats[cat],
+                'amount': int(amount),
+                'place': place,
+                'date': date,
+                'mode': 'payment'
+            }
+
+def main():
+    global config, z
+    config = load_config()
+    # use_context=True is required for v13+ compatibility
+    updater = Updater(token=config['telegram']['token'], use_context=True) 
+    dispatcher = updater.dispatcher
+    z = init_zaim(config)
+    
+    dispatcher.add_handler(CommandHandler('cat', categories))
+    dispatcher.add_handler(CommandHandler('month', month))
+    dispatcher.add_handler(CommandHandler('alias', alias))
+    # RegexHandler was deprecated, replaced with MessageHandler + Filters.regex
+    dispatcher.add_handler(MessageHandler(Filters.regex(r'/cancel_(\d+)'), cancel))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handler))
+    
+    logging.info('Start polling')
+    updater.start_polling()
+
+if __name__ == '__main__':
+    main()
