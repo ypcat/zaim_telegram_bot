@@ -20,15 +20,14 @@ defmodule LedgerBot.Bot.Handler do
   command("categories", description: "🏷️ 分類管理")
   command("help",    description: "❓ 說明")
 
-  # ── Message handler ────────────────────────────────────────────────────────
+  # ── Message handler (plain text, not a command) ───────────────────────────
 
-  def handle({:message, msg}, context) do
+  def handle({:text, text, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
 
     {:ok, user} = Users.get_or_create(user_id)
     session = FSM.get(user_id, chat_id)
-    text = msg.text || ""
 
     case session.fsm_state do
       "idle" ->
@@ -70,9 +69,12 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
+  # Non-text messages (photos, stickers, etc.) — ignore silently
+  def handle({:message, _msg}, _context), do: :ok
+
   # ── Inline command handlers ────────────────────────────────────────────────
 
-  def handle({:command, "start", msg}, context) do
+  def handle({:command, :start, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -90,7 +92,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "add", msg}, context) do
+  def handle({:command, :add, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -120,7 +122,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "list", msg}, context) do
+  def handle({:command, :list, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -142,7 +144,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "month", msg}, context) do
+  def handle({:command, :month, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -158,7 +160,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "year", msg}, context) do
+  def handle({:command, :year, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -174,7 +176,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "books", msg}, context) do
+  def handle({:command, :books, msg}, context) do
     user_id = msg.from.id
     {:ok, user} = Users.get_or_create(user_id)
     books = Books.list_for_user(user.id)
@@ -187,7 +189,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "invite", msg}, context) do
+  def handle({:command, :invite, msg}, context) do
     user_id = msg.from.id
     {:ok, _user} = Users.get_or_create(user_id)
     parts = String.split(msg.text || "", ~r/\s+/, trim: true)
@@ -201,7 +203,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "delete", msg}, context) do
+  def handle({:command, :delete, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -231,7 +233,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "edit", msg}, context) do
+  def handle({:command, :edit, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -260,7 +262,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "categories", msg}, context) do
+  def handle({:command, :categories, msg}, context) do
     user_id = msg.from.id
     chat_id = msg.chat.id
     {:ok, user} = Users.get_or_create(user_id)
@@ -278,7 +280,7 @@ defmodule LedgerBot.Bot.Handler do
     end
   end
 
-  def handle({:command, "help", _msg}, context) do
+  def handle({:command, :help, _msg}, context) do
     answer(context, """
     📖 *LedgerBot 說明*
 
