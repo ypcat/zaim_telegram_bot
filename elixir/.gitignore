@@ -24,4 +24,6 @@ ledger_bot-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
-dev.db\ntest.db\n*.db
+*.db
+*.db-shm
+*.db-wal
