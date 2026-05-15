@@ -48,7 +48,7 @@ defmodule LedgerBot.MixProject do
       # HTTP (req/finch stack)
       {:finch, g.("sneako/finch", "main")},
       {:mint, g.("elixir-mint/mint", "main")},
-      {:castore, g.("elixir-mint/castore", "main")},
+      #{:castore, g.("elixir-mint/castore", "main")},
       {:hpax, g.("elixir-mint/hpax", "main")},
       {:mime, g.("elixir-plug/mime", "master")},
 

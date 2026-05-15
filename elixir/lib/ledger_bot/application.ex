@@ -13,7 +13,7 @@ defmodule LedgerBot.Application do
         LedgerBot.Bot.FSM
       ] ++
         if token do
-          [ExGram, {LedgerBot.Bot.Handler, [method: :polling]}]
+          [ExGram, {LedgerBot.Bot.Handler, [method: :polling, token: token]}]
         else
           []
         end
