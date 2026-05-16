@@ -297,29 +297,31 @@ defmodule LedgerBot.Bot.Handler do
     session = FSM.get(user_id, chat_id)
 
     context
-    |> handle_callback(data, user, user_id, chat_id, msg, session)
+    |> handle_callback(data, user, user_id, chat_id, callback_query, session)
     |> answer_callback(callback_query)
   end
 
   # ── Callback dispatch ──────────────────────────────────────────────────────
+  # Note: `cq` is the full CallbackQuery struct; edit/5 needs it (not cq.message)
+  # because extract_inline_id_params/1 expects %{message: %{message_id: ...}}.
 
-  defp handle_callback(context, "cancel", _user, user_id, chat_id, msg, _session) do
+  defp handle_callback(context, "cancel", _user, user_id, chat_id, cq, _session) do
     FSM.reset(user_id, chat_id)
-    edit(context, :inline, msg, "已取消。", [])
+    edit(context, :inline, cq, "已取消。", [])
   end
 
-  defp handle_callback(context, "noop", _user, _user_id, _chat_id, _msg, _session), do: context
+  defp handle_callback(context, "noop", _user, _user_id, _chat_id, _cq, _session), do: context
 
-  defp handle_callback(context, "type:" <> type, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "type:" <> type, _user, user_id, chat_id, cq, session)
        when type in ["expense", "income"] and session.fsm_state == "add_type" do
     book_id = session.data[:book_id] || FSM.get_book(user_id, chat_id)
     cats = Categories.list_parents(book_id, type)
     type_label = if type == "expense", do: "💸 支出", else: "💰 收入"
     FSM.put(user_id, chat_id, "add_category", %{type: type, book_id: book_id})
-    edit(context, :inline, msg, "#{type_label} → 分類：", reply_markup: Keyboard.category_grid_paged(cats, 1))
+    edit(context, :inline, cq, "#{type_label} → 分類：", reply_markup: Keyboard.category_grid_paged(cats, 1))
   end
 
-  defp handle_callback(context, "cat_page:" <> page_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "cat_page:" <> page_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_category" do
     page = String.to_integer(page_str)
     book_id = session.data[:book_id]
@@ -327,10 +329,10 @@ defmodule LedgerBot.Bot.Handler do
     cats = Categories.list_parents(book_id, type)
     type_label = if type == "expense", do: "💸 支出", else: "💰 收入"
     FSM.put(user_id, chat_id, "add_category", session.data)
-    edit(context, :inline, msg, "#{type_label} → 分類：", reply_markup: Keyboard.category_grid_paged(cats, page))
+    edit(context, :inline, cq, "#{type_label} → 分類：", reply_markup: Keyboard.category_grid_paged(cats, page))
   end
 
-  defp handle_callback(context, "cat:" <> cat_id_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "cat:" <> cat_id_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_category" do
     cat_id = String.to_integer(cat_id_str)
     cat = Categories.get(cat_id)
@@ -341,26 +343,26 @@ defmodule LedgerBot.Bot.Handler do
 
     if Enum.empty?(subcats) do
       FSM.put(user_id, chat_id, "add_amount", data_map)
-      edit(context, :inline, msg,
+      edit(context, :inline, cq,
         "#{type_label} → #{cat_icon}#{cat.name}\n\n💰 請輸入金額：", [])
     else
       FSM.put(user_id, chat_id, "add_subcategory", data_map)
-      edit(context, :inline, msg,
+      edit(context, :inline, cq,
         "#{type_label} → #{cat_icon}#{cat.name} → 子分類：",
         reply_markup: Keyboard.subcategory_grid(subcats, cat_id))
     end
   end
 
-  defp handle_callback(context, "subcat:skip", _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "subcat:skip", _user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_subcategory" do
     FSM.put(user_id, chat_id, "add_amount", session.data)
     type_label = if session.data[:type] == "expense", do: "💸 支出", else: "💰 收入"
     cat_name = session.data[:category_name]
-    edit(context, :inline, msg,
+    edit(context, :inline, cq,
       "#{type_label} → #{cat_name}\n\n💰 請輸入金額：", [])
   end
 
-  defp handle_callback(context, "subcat:" <> subcat_id_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "subcat:" <> subcat_id_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_subcategory" do
     subcat_id = String.to_integer(subcat_id_str)
     subcat = Categories.get(subcat_id)
@@ -368,20 +370,20 @@ defmodule LedgerBot.Bot.Handler do
     FSM.put(user_id, chat_id, "add_amount", data_map)
     type_label = if session.data[:type] == "expense", do: "💸 支出", else: "💰 收入"
     cat_name = session.data[:category_name]
-    edit(context, :inline, msg,
+    edit(context, :inline, cq,
       "#{type_label} → #{cat_name} → #{subcat.name}\n\n💰 請輸入金額：", [])
   end
 
-  defp handle_callback(context, "date:" <> date_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "date:" <> date_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_date" do
     {:ok, date} = Date.from_iso8601(date_str)
     data_map = Map.put(session.data, :date, Date.to_iso8601(date))
     FSM.put(user_id, chat_id, "add_confirm", data_map)
-    edit(context, :inline, msg, Formatter.transaction_summary(data_map),
+    edit(context, :inline, cq, Formatter.transaction_summary(data_map),
       parse_mode: "Markdown", reply_markup: Keyboard.confirm_buttons())
   end
 
-  defp handle_callback(context, "confirm:yes", user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "confirm:yes", user, user_id, chat_id, cq, session)
        when session.fsm_state == "add_confirm" do
     data_map = session.data
     today = Date.utc_today() |> Date.to_iso8601()
@@ -402,30 +404,30 @@ defmodule LedgerBot.Bot.Handler do
       {:ok, _txn} ->
         FSM.push_recent(user_id, %{category_name: data_map[:category_name], place: data_map[:place]})
         FSM.reset(user_id, chat_id)
-        edit(context, :inline, msg,
+        edit(context, :inline, cq,
           "✅ 已記帳！#{Formatter.amount(data_map[:amount])} @ #{data_map[:place]}", [])
       {:error, changeset} ->
         errors = Ecto.Changeset.traverse_errors(changeset, fn {m, _} -> m end)
-        edit(context, :inline, msg, "❌ 失敗：#{inspect(errors)}", [])
+        edit(context, :inline, cq, "❌ 失敗：#{inspect(errors)}", [])
     end
   end
 
-  defp handle_callback(context, "delete:" <> txn_id_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "delete:" <> txn_id_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "delete_pick" do
     txn_id = String.to_integer(txn_id_str)
     book_id = session.data[:book_id]
 
     case Ledger.get_for_user(txn_id, book_id) do
       nil ->
-        edit(context, :inline, msg, "找不到此記錄。", [])
+        edit(context, :inline, cq, "找不到此記錄。", [])
       txn ->
         Ledger.soft_delete(txn)
         FSM.reset(user_id, chat_id)
-        edit(context, :inline, msg, "✅ 已刪除：#{txn.place} #{Formatter.amount(txn.amount)}", [])
+        edit(context, :inline, cq, "✅ 已刪除：#{txn.place} #{Formatter.amount(txn.amount)}", [])
     end
   end
 
-  defp handle_callback(context, "edit_pick:" <> txn_id_str, _user, user_id, chat_id, msg, session)
+  defp handle_callback(context, "edit_pick:" <> txn_id_str, _user, user_id, chat_id, cq, session)
        when session.fsm_state == "edit_pick" do
     txn_id = String.to_integer(txn_id_str)
     data_map = Map.put(session.data, :txn_id, txn_id)
@@ -436,10 +438,10 @@ defmodule LedgerBot.Bot.Handler do
       [%ExGram.Model.InlineKeyboardButton{text: "📅 日期", callback_data: "edit_field:date"},
        %ExGram.Model.InlineKeyboardButton{text: "❌ 取消", callback_data: "cancel"}]
     ])
-    edit(context, :inline, msg, "✏️ 修改欄位：", reply_markup: kb)
+    edit(context, :inline, cq, "✏️ 修改欄位：", reply_markup: kb)
   end
 
-  defp handle_callback(context, "edit_field:" <> field, _user, user_id, chat_id, msg, session) do
+  defp handle_callback(context, "edit_field:" <> field, _user, user_id, chat_id, cq, session) do
     data_map = Map.put(session.data, :edit_field, field)
     FSM.put(user_id, chat_id, "edit_value", data_map)
     prompt = case field do
@@ -448,10 +450,10 @@ defmodule LedgerBot.Bot.Handler do
       "date"   -> "輸入新日期 (YYYY-MM-DD)："
       _        -> "輸入新值："
     end
-    edit(context, :inline, msg, "✏️ #{prompt}", [])
+    edit(context, :inline, cq, "✏️ #{prompt}", [])
   end
 
-  defp handle_callback(context, "quick:" <> cat_and_place, _user, user_id, chat_id, msg, _session) do
+  defp handle_callback(context, "quick:" <> cat_and_place, _user, user_id, chat_id, cq, _session) do
     [cat_name, place] = String.split(cat_and_place, ":", parts: 2)
     book_id = FSM.get_book(user_id, chat_id)
     cat = Categories.find_by_name(book_id, cat_name)
@@ -465,13 +467,13 @@ defmodule LedgerBot.Bot.Handler do
         place: place
       }
       FSM.put(user_id, chat_id, "add_amount", data_map)
-      edit(context, :inline, msg, "#{cat.name} → #{place}\n\n💰 請輸入金額：", [])
+      edit(context, :inline, cq, "#{cat.name} → #{place}\n\n💰 請輸入金額：", [])
     else
-      edit(context, :inline, msg, "找不到分類，請重新操作。", [])
+      edit(context, :inline, cq, "找不到分類，請重新操作。", [])
     end
   end
 
-  defp handle_callback(context, _data, _user, _user_id, _chat_id, _msg, _session), do: context
+  defp handle_callback(context, _data, _user, _user_id, _chat_id, _cq, _session), do: context
 
   # ── Private helpers ────────────────────────────────────────────────────────
 
