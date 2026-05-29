@@ -1,4 +1,10 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#     "zaim",
+# ]
+# ///
 
 import datetime
 import json
@@ -11,7 +17,7 @@ def oauth():
                    consumer_secret=config['zaim']['consumer_secret'])
     request_token = api.get_request_token('oob')
     print('https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token'])
-    token = raw_input('Paste authorized token: ')
+    token = input('Paste authorized token: ')
     oauth_token = api.get_access_token(token)
     with open('oauth_token.json','w') as f:
         json.dump(oauth_token, f)
@@ -32,15 +38,16 @@ def auth():
 
 def main():
     api = auth()
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime('%Y-%m-%d')
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=9000)).strftime('%Y-%m-%d')
     result = api.money(start_date=start_date)
-    fn = '%s_zaim.csv' % datetime.datetime.now().strftime('%Y%m%d')
-    with open(fn, 'w') as f:
+    #fn = '%s_zaim.csv' % datetime.datetime.now().strftime('%Y%m%d')
+    fn = '%s_zaim.jsonl' % datetime.datetime.now().strftime('%Y%m%d')
+    with open(fn, 'w', encoding='utf-8') as f:
         for entry in result['money']:
-            line = u'%s,%s,%s' % (entry['date'], entry['place'], entry['amount'])
-            f.write(line.encode('utf8') + '\n')
+            #line = '%s,%s,%s' % (entry['date'], entry['place'], entry['amount'])
+            line = json.dumps(entry)
+            f.write(line + '\n')
     print('write to %s' % fn)
 
 if __name__ == '__main__':
     main()
-
