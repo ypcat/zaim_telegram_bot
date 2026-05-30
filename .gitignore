@@ -67,5 +67,7 @@ target/
 
 20*.txt
 20*.csv
+20*.jsonl
 oauth_token.json
-
+erl_crash.dump
+state.json
