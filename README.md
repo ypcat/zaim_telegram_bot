@@ -54,6 +54,8 @@ ExecStart=/home/peilun/git/zaim_telegram_bot/run.sh
 Restart=always
 RestartSec=5
 SyslogIdentifier=zaim
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -72,8 +74,19 @@ journalctl -u zaim -n 50      # last 50
 Quiet is normal. Three lines at startup, then one per action. Set
 `Environment=LOG_LEVEL=DEBUG` in the unit for per-message detail.
 
-If nothing at all appears, the service is not running this code. Check with
-`systemctl show zaim -p ExecMainPID -p FragmentPath` and `git -C <dir> log --oneline -1`.
+`git pull` does not reload a running service — `systemctl restart zaim` after
+every pull.
+
+If nothing appears at all, bisect it:
+
+```sh
+systemctl show zaim -p ExecMainPID --value          # then: ps -o lstart= -p <pid>
+sudo systemctl stop zaim && ./run.sh                # foreground
+```
+
+Startup lines in the foreground but not in the journal means the unit is the
+problem, not the bot: add the two Standard* lines above and
+`systemctl daemon-reload`.
 
 ## Files
 
