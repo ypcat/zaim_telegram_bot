@@ -38,6 +38,28 @@ Refuses to start if the token is dead, and tells you to run `./auth.sh`.
 
 Commands are published to Telegram on startup, so they appear in the client's `/` menu.
 
+## systemd
+
+```ini
+[Service]
+Type=simple
+WorkingDirectory=/home/peilun/zaim_telegram_bot
+ExecStart=/home/peilun/zaim_telegram_bot/run.sh
+Restart=always
+StandardOutput=journal
+StandardError=journal
+```
+
+Logs go to stderr, so `StandardError=journal` is the one that matters.
+
+```sh
+journalctl -u zaim-telegram-bot -f        # follow
+journalctl -u zaim-telegram-bot -n 50     # last 50
+```
+
+Set `Environment=LOG_LEVEL=DEBUG` for per-message detail. Quiet at INFO is
+normal: the bot logs three lines at startup, then one per action.
+
 ## Files
 
 - `oauth_token.json` — Zaim access token. Gitignored. **Copy it when redeploying**, or re-run `./auth.sh` on the new host.

@@ -22,13 +22,17 @@ from telegram.ext import (
 import zaim_api
 
 logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO)
+        format='%(asctime)s %(levelname)-7s %(message)s',
+        level=os.environ.get('LOG_LEVEL', 'INFO').upper())
 
-# httpx logs every request URL at INFO, and the Telegram API embeds the bot
-# token in the path (.../bot<TOKEN>/getUpdates). Keep it out of the logs.
+# The Telegram API embeds the bot token in the request path
+# (.../bot<TOKEN>/getUpdates), so anything logging a URL leaks it: httpx does
+# at INFO, and python-telegram-bot does at DEBUG. Cap both. LOG_LEVEL=DEBUG
+# then turns on this module's own debug lines without exposing the token.
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(
+    max(logging.getLogger().getEffectiveLevel(), logging.INFO))
 
 # Published to Telegram with setMyCommands so they show in the client's
 # command menu. /cancel_<id> is omitted: the id varies, so it cannot be
@@ -110,11 +114,17 @@ def init_zaim(config):
     if r.get('error'):
         sys.exit('Zaim rejected the saved token (%s). Run '
                  '`uv run python bot.py --auth` to reauthorize.' % r.get('message'))
+    me = r.get('me', {})
+    logging.info('Zaim account %s (%s), %d entries',
+                 me.get('id'), me.get('currency_code'), me.get('input_count', 0))
     return api
 
 REAUTH_HINT = ('Zaim rejected the request: %s\n'
                'If this is 401, the access token expired. Reauthorize with '
                '`bot.py --auth` and tick 家計簿へのアクセスを永続的に許可する.')
+
+def who(update):
+    return update.message.from_user.name
 
 def zaim_error(resp):
     """Return a user-facing message if the Zaim call failed, else None."""
@@ -122,7 +132,7 @@ def zaim_error(resp):
         return REAUTH_HINT % resp.get('message', resp['error'])
 
 async def usage(update, context):
-    logging.info('/help')
+    logging.info('%s /help', who(update))
     await context.bot.send_message(chat_id=update.message.chat_id, text=USAGE)
 
 def format_cats():
@@ -141,7 +151,7 @@ def format_cats():
     return '\n'.join(lines)
 
 async def categories(update, context):
-    logging.info('/cats')
+    logging.info('%s /cats', who(update))
     await context.bot.send_message(chat_id=update.message.chat_id,
                                    text=format_cats())
 
@@ -171,8 +181,9 @@ def add_alias(arg):
     return 'Added %s=%s' % (new, canonical[cid])
 
 async def alias(update, context):
-    logging.info('/alias %s', update.message.text)
-    reply = add_alias(' '.join(context.args))
+    arg = ' '.join(context.args)
+    reply = add_alias(arg)
+    logging.info('%s /alias %s -> %s', who(update), arg, reply.splitlines()[0])
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply)
 
 UNALIAS_USAGE = ('Usage: /unalias <name> [name ...]\n'
@@ -208,21 +219,23 @@ def remove_aliases(args):
     return '\n'.join(replies)
 
 async def unalias(update, context):
-    logging.info('/unalias %s', update.message.text)
     reply = remove_aliases(context.args)
+    logging.info('%s /unalias %s -> %s', who(update), ' '.join(context.args),
+                 '; '.join(reply.splitlines()))
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply)
 
 async def handler(update, context):
     chat_id = update.message.chat_id
     text = update.message.text
-    name = update.message.from_user.name
-    logging.info('%s(%s): %s', name, chat_id, text)
+    name = who(update)
     if text:
         data = parse(text)
-        logging.info('data: %s', data)
         if not data:
             if entry_prefix.match(text):
+                logging.info('%s could not parse %r', name, text)
                 await context.bot.send_message(chat_id=chat_id, text=PARSE_HINT)
+            else:
+                logging.debug('%s ignored %r', name, text)
             return
         mode = data.pop('mode')
         if mode == 'income':
@@ -230,23 +243,32 @@ async def handler(update, context):
         else:
             func = z.payment
         resp = await asyncio.to_thread(lambda: func(**data))
-        logging.info('%s: %s', mode, resp)
         err = zaim_error(resp)
         if err:
+            logging.warning('%s %s rejected by Zaim: %s', name, mode,
+                            resp.get('message'))
             await context.bot.send_message(chat_id=chat_id, text=err)
             return
 
         # income has only category_id
         cat = canonical[data.get('genre_id', data['category_id'])]
 
+        logging.info('%s %s %s %s %s -> id %s', name, mode, cat,
+                     data['place'].strip(), data['amount'], resp['money']['id'])
         reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
         await context.bot.send_message(chat_id=chat_id, text=reply_text)
         await month(update, context)
 
 async def cancel(update, context):
     money_id = int(context.match.group(1))
-    logging.info('cancel %s', money_id)
-    await asyncio.to_thread(z.delete, mode='payment', money_id=money_id)
+    resp = await asyncio.to_thread(z.delete, mode='payment', money_id=money_id)
+    err = zaim_error(resp)
+    if err:
+        logging.warning('%s cancel %s rejected by Zaim: %s', who(update),
+                        money_id, resp.get('message'))
+        await context.bot.send_message(chat_id=update.message.chat_id, text=err)
+        return
+    logging.info('%s cancel %s', who(update), money_id)
     reply_text = f'cancel {money_id}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
@@ -261,6 +283,8 @@ async def month(update, context):
         await context.bot.send_message(chat_id=update.message.chat_id, text=err)
         return
     amount = sum(i['amount'] for i in r['money'])
+    logging.info('%s month %d-%02d: %d over %d payments', who(update),
+                 today.year, today.month, amount, len(r['money']))
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
@@ -292,7 +316,8 @@ def parse(text):
 async def post_init(application):
     await application.bot.set_my_commands(
         [BotCommand(name, description) for name, description in COMMANDS])
-    logging.info('Published %d commands to Telegram', len(COMMANDS))
+    logging.info('Polling as @%s, published %s', application.bot.username,
+                 ', '.join('/' + name for name, _ in COMMANDS))
 
 def main():
     global config, z
@@ -302,6 +327,7 @@ def main():
                            config['zaim']['consumer_secret'])
         return
     z = init_zaim(config)
+    logging.info('%d category names in %d categories', len(name_to), len(canonical))
     application = (ApplicationBuilder()
                    .token(config['telegram']['token'])
                    .post_init(post_init)
@@ -315,7 +341,6 @@ def main():
     application.add_handler(MessageHandler(filters.Regex(r'/cancel_(\d+)'), cancel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
 
-    logging.info('Start polling')
     application.run_polling()
 
 if __name__ == '__main__':
