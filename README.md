@@ -41,24 +41,39 @@ Commands are published to Telegram on startup, so they appear in the client's `/
 ## systemd
 
 ```ini
+[Unit]
+Description=zaim
+Wants=network-online.target
+After=network-online.target
+
 [Service]
 Type=simple
-WorkingDirectory=/home/peilun/zaim_telegram_bot
-ExecStart=/home/peilun/zaim_telegram_bot/run.sh
+User=peilun
+WorkingDirectory=/home/peilun/git/zaim_telegram_bot
+ExecStart=/home/peilun/git/zaim_telegram_bot/run.sh
 Restart=always
-StandardOutput=journal
-StandardError=journal
+RestartSec=5
+SyslogIdentifier=zaim
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Logs go to stderr, so `StandardError=journal` is the one that matters.
+`Restart=always` matters: without it a crash or a dropped network leaves the
+bot down until you notice.
+
+Logs go to stderr, which systemd sends to the journal by default:
 
 ```sh
-journalctl -u zaim-telegram-bot -f        # follow
-journalctl -u zaim-telegram-bot -n 50     # last 50
+journalctl -u zaim -f         # follow
+journalctl -u zaim -n 50      # last 50
 ```
 
-Set `Environment=LOG_LEVEL=DEBUG` for per-message detail. Quiet at INFO is
-normal: the bot logs three lines at startup, then one per action.
+Quiet is normal. Three lines at startup, then one per action. Set
+`Environment=LOG_LEVEL=DEBUG` in the unit for per-message detail.
+
+If nothing at all appears, the service is not running this code. Check with
+`systemctl show zaim -p ExecMainPID -p FragmentPath` and `git -C <dir> log --oneline -1`.
 
 ## Files
 
