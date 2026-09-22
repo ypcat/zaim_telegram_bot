@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.14"
 # dependencies = [
-#     "pyquery",
 #     "python-telegram-bot>=22.8",
 #     "requests",
 #     "requests-oauthlib",
@@ -13,11 +12,9 @@ import datetime
 import json
 import os
 import re
-import traceback
+import sys
 import logging
 
-import pyquery
-import requests
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters)
 
@@ -78,43 +75,18 @@ cats_income = {
     u'收款': '19',
 }
 
-def auth(z, config):
-    try:
-        assert not z.verify()['error']
-    except Exception:
-        traceback.print_exc()
-        print('Renew oauth token')
-        request_token = z.get_request_token('http://example.com')
-        auth_url = 'https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token']
-        s = requests.Session()
-        r = s.get(auth_url)
-        q = pyquery.PyQuery(r.text)
-        data = {i.name: i.value for i in q('input') if i.name != 'disagree'}
-        data['data[User][email]'] = config['zaim']['email']
-        data['data[User][password]'] = config['zaim']['password']
-        r = s.post('https://auth.zaim.net/users/auth', data=data)
-        q = pyquery.PyQuery(r.text)
-        oauth_verifier = q('code').text()
-        access_token = z.get_access_token(oauth_verifier)
-        z = zaim_api.Api(
-            consumer_key = config['zaim']['consumer_key'],
-            consumer_secret = config['zaim']['consumer_secret'],
-            access_token = access_token['oauth_token'],
-            access_token_secret = access_token['oauth_token_secret'],
-        )
-    return z
-
-async def ensure_auth():
-    # The Zaim client is synchronous; keep it off the event loop.
-    global z
-    z = await asyncio.to_thread(auth, z, config)
-
 def load_config():
     with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
         return json.load(f)
 
 def init_zaim(config):
-    return zaim_api.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
+    # OAuth 1.0a tokens do not expire; authorize once with --auth, then reuse.
+    try:
+        return zaim_api.from_token(config['zaim']['consumer_key'],
+                                   config['zaim']['consumer_secret'])
+    except FileNotFoundError:
+        sys.exit('No %s. Run `uv run python bot.py --auth` once to authorize.'
+                 % zaim_api.TOKEN_PATH)
 
 async def categories(update, context):
     logging.info('/cat')
@@ -135,7 +107,6 @@ async def handler(update, context):
         data = parse(text)
         logging.info('data: %s', data)
         if data:
-            await ensure_auth()
             mode = data.pop('mode')
             if mode == 'income':
                 func = z.income
@@ -158,7 +129,6 @@ async def handler(update, context):
 async def cancel(update, context):
     money_id = int(context.match.group(1))
     logging.info('cancel %s', money_id)
-    await ensure_auth()
     await asyncio.to_thread(z.delete, mode='payment', money_id=money_id)
     reply_text = f'cancel {money_id}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
@@ -166,7 +136,6 @@ async def cancel(update, context):
 async def month(update, context):
     today = datetime.date.today()
     start = today - datetime.timedelta(days=today.day - 1)
-    await ensure_auth()
     r = await asyncio.to_thread(z.money, mode='payment',
                                 start_date=start.isoformat(),
                                 end_date=today.isoformat())
@@ -203,8 +172,12 @@ def parse(text):
 def main():
     global config, z
     config = load_config()
-    application = ApplicationBuilder().token(config['telegram']['token']).build()
+    if '--auth' in sys.argv:
+        zaim_api.authorize(config['zaim']['consumer_key'],
+                           config['zaim']['consumer_secret'])
+        return
     z = init_zaim(config)
+    application = ApplicationBuilder().token(config['telegram']['token']).build()
 
     application.add_handler(CommandHandler('cat', categories))
     application.add_handler(CommandHandler('month', month))
