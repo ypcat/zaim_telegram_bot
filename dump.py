@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.14"
 # dependencies = [
-#     "zaim",
+#     "requests",
+#     "requests-oauthlib",
 # ]
 # ///
 
 import datetime
 import json
 
-import zaim
+import zaim_api
 
 def oauth():
     config = json.load(open('config.json'))
-    api = zaim.Api(consumer_key=config['zaim']['consumer_key'],
-                   consumer_secret=config['zaim']['consumer_secret'])
+    api = zaim_api.Api(consumer_key=config['zaim']['consumer_key'],
+                       consumer_secret=config['zaim']['consumer_secret'])
     request_token = api.get_request_token('oob')
     print('https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token'])
     token = input('Paste authorized token: ')
@@ -25,10 +26,10 @@ def oauth():
 def auth():
     config = json.load(open('config.json'))
     oauth_token = json.load(open('oauth_token.json'))
-    api = zaim.Api(consumer_key=config['zaim']['consumer_key'],
-                   consumer_secret=config['zaim']['consumer_secret'],
-                   access_token=oauth_token['oauth_token'],
-                   access_token_secret=oauth_token['oauth_token_secret'])
+    api = zaim_api.Api(consumer_key=config['zaim']['consumer_key'],
+                       consumer_secret=config['zaim']['consumer_secret'],
+                       access_token=oauth_token['oauth_token'],
+                       access_token_secret=oauth_token['oauth_token_secret'])
     r = api.verify()
     if r.get('error'):
         print(r)

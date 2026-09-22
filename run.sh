@@ -1,4 +1,3 @@
 #!/bin/bash
 cd `dirname $0`
-. .venv/bin/activate
-python bot.py
+exec uv run --locked python bot.py

@@ -1,0 +1,86 @@
+# -*- coding: utf-8 -*-
+"""Minimal Zaim API v2 client.
+
+Vendored replacement for the abandoned `zaim` PyPI package (0.2.3, last
+released 2019), which pulled in `future`/`six`/`tabulate` for Python 2
+compatibility. Only the endpoints this project uses are implemented.
+"""
+
+from urllib.parse import parse_qsl
+
+import requests
+from requests_oauthlib import OAuth1
+
+BASE_URL = 'https://api.zaim.net/v2'
+
+
+class Api:
+    def __init__(self, consumer_key=None, consumer_secret=None,
+                 access_token=None, access_token_secret=None):
+        self.consumer_key = consumer_key
+        self.consumer_secret = consumer_secret
+        self.auth = None
+        if access_token is not None and access_token_secret is not None:
+            self.auth = OAuth1(consumer_key, consumer_secret,
+                               access_token, access_token_secret)
+
+    def _request(self, method, path, **kwargs):
+        key = 'params' if method == 'GET' else 'data'
+        r = requests.request(method, BASE_URL + path, auth=self.auth,
+                             **{key: kwargs})
+        try:
+            return r.json()
+        except ValueError:
+            raise Exception(r.text)
+
+    def get_request_token(self, callback_uri):
+        auth = OAuth1(self.consumer_key, self.consumer_secret,
+                      callback_uri=callback_uri)
+        r = requests.post(BASE_URL + '/auth/request', auth=auth)
+        request_token = dict(parse_qsl(r.text))
+        self.request_token = request_token['oauth_token']
+        self.request_token_secret = request_token['oauth_token_secret']
+        return request_token
+
+    def get_access_token(self, oauth_verifier):
+        auth = OAuth1(self.consumer_key, self.consumer_secret,
+                      self.request_token, self.request_token_secret,
+                      verifier=oauth_verifier)
+        r = requests.post(BASE_URL + '/auth/access', auth=auth)
+        access_token = dict(parse_qsl(r.text))
+        self.auth = OAuth1(self.consumer_key, self.consumer_secret,
+                           access_token['oauth_token'],
+                           access_token['oauth_token_secret'])
+        return access_token
+
+    def verify(self):
+        return self._request('GET', '/home/user/verify')
+
+    def money(self, mapping=1, category_id=None, genre_id=None, mode=None,
+              order=None, start_date=None, end_date=None, page=None,
+              limit=None, group_by=None):
+        return self._request('GET', '/home/money',
+                             mapping=mapping, category_id=category_id,
+                             genre_id=genre_id, mode=mode, order=order,
+                             start_date=start_date, end_date=end_date,
+                             page=page, limit=limit, group_by=group_by)
+
+    def payment(self, mapping=1, category_id=None, genre_id=None, amount=None,
+                date=None, from_account_id=None, comment=None, name=None,
+                place=None):
+        return self._request('POST', '/home/money/payment',
+                             mapping=mapping, category_id=category_id,
+                             genre_id=genre_id, amount=amount, date=date,
+                             from_account_id=from_account_id, comment=comment,
+                             name=name, place=place)
+
+    def income(self, mapping=1, category_id=None, amount=None, date=None,
+               to_account_id=None, comment=None, place=None):
+        return self._request('POST', '/home/money/income',
+                             mapping=mapping, category_id=category_id,
+                             amount=amount, date=date,
+                             to_account_id=to_account_id, comment=comment,
+                             place=place)
+
+    def delete(self, mode, money_id):
+        return self._request('DELETE', '/home/money/%s/%d' % (mode, money_id))
