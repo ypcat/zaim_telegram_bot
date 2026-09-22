@@ -124,8 +124,17 @@ def authorize(consumer_key, consumer_secret, token_path=TOKEN_PATH,
     print('  Without it the token expires in 24 hours. If the checkbox is not')
     print('  shown, enable 永続許可 for this app at https://dev.zaim.net/ first.')
     print()
-    verifier = prompt('verifier code: ').strip()
-    token = api.get_access_token(verifier)
+    try:
+        verifier = prompt('verifier code: ').strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit('\nAborted. Existing token left alone.')
+    if not verifier:
+        raise SystemExit('No code entered. Nothing changed.')
+    try:
+        token = api.get_access_token(verifier)
+    except KeyError:
+        raise SystemExit('Zaim did not return a token - wrong code? '
+                         'Run it again and copy the whole code.')
     fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as f:
         json.dump(token, f)
