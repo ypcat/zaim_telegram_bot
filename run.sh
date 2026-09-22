@@ -2,17 +2,24 @@
 set -eu
 cd "$(dirname "$0")"
 
-# systemd hands over a minimal PATH, so a per-user uv (mise, the standalone
-# installer, cargo) is not on it. Look in the usual places before giving up.
+# systemd hands over a minimal PATH, so a per-user uv is not on it.
 for d in "$HOME/.local/share/mise/shims" "$HOME/.local/bin" "$HOME/.cargo/bin"; do
     [ -x "$d/uv" ] && PATH="$d:$PATH"
-done
+done || true
 export PATH
 
-command -v uv >/dev/null || {
-    echo "uv not found on PATH=$PATH" >&2
-    echo "Set Environment=PATH=... in the systemd unit, or install uv system-wide." >&2
+# Keep .venv in step with uv.lock, but do NOT run the bot through `uv run`.
+# Doing so leaves uv as the service's main process, and a snap-packaged uv
+# re-execs through snap-confine into its own namespace and cgroup. The python
+# process then escapes zaim.service's cgroup, which journald uses to attribute
+# output to a unit, so nothing it logs ever reaches `journalctl -u zaim`.
+if command -v uv >/dev/null; then
+    uv sync --locked --quiet || echo "uv sync failed; using existing .venv" >&2
+fi
+
+[ -x .venv/bin/python ] || {
+    echo "No .venv here. Run: uv sync --locked" >&2
     exit 127
 }
 
-exec uv run --locked python bot.py
+exec .venv/bin/python bot.py

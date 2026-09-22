@@ -74,8 +74,19 @@ journalctl -u zaim -n 50      # last 50
 Quiet is normal. Three lines at startup, then one per action. Set
 `Environment=LOG_LEVEL=DEBUG` in the unit for per-message detail.
 
-`git pull` does not reload a running service — `systemctl restart zaim` after
-every pull.
+`git pull` does not reload a running service:
+
+```sh
+git pull && uv sync --locked && sudo systemctl restart zaim
+```
+
+`run.sh` execs `.venv/bin/python` directly rather than going through
+`uv run`. With `uv run`, uv stays the service's main process, and a
+snap-packaged uv re-execs through snap-confine into its own namespace and
+cgroup. Python then escapes `zaim.service`'s cgroup, which is what journald
+uses to attribute output to a unit, so nothing it logs reaches
+`journalctl -u zaim`. The symptom is a unit that reports `active (running)`
+with `Tasks: 0` and a few KB of memory.
 
 If nothing appears at all, bisect it:
 
