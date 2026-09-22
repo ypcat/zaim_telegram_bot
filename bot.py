@@ -35,8 +35,10 @@ logging.getLogger('httpcore').setLevel(logging.WARNING)
 # registered as a static command.
 COMMANDS = [
     ('help', 'Show usage'),
-    ('cat', 'List category keywords'),
+    ('cats', 'List categories and aliases'),
     ('month', "This month's total"),
+    ('alias', 'Add an alias, e.g. /alias 買菜=食物'),
+    ('unalias', 'Remove aliases, e.g. /unalias 買菜 咖啡'),
 ]
 
 USAGE = '''Log an entry by typing:  <category> <place> <amount>
@@ -48,57 +50,47 @@ USAGE = '''Log an entry by typing:  <category> <place> <amount>
 Each reply carries a /cancel_<id> link to undo that entry.
 
 /help   this message
-/cat    list all category keywords
-/month  this month's total'''
+/cats   list all categories and their aliases
+/month  this month's total
+/alias  add an alias, e.g. /alias 買菜=食物
+/unalias  remove aliases, e.g. /unalias 買菜 咖啡'''
 
 PARSE_HINT = ("Couldn't parse that. Expected: <category> <place> <amount>\n"
               'e.g. 午餐 摩斯 120   -   /help for the full syntax')
 
-cats = {
-    u'食物':'10101', u'點心':'10102', u'早餐':'10103', u'午餐':'10104', u'晚餐':'10105',
-    u'買菜':'10101', u'咖啡':'10102', u'下午茶': '10102',
-    u'雜貨':'10201', u'雜物':'10201',
-    u'電車':'10301', u'計程車':'10302', u'公車':'10303', u'機票':'10304',
-    u'行動':'10401', u'市話':'10402', u'網路':'10403', u'電視':'10404', u'快遞':'10405', u'郵票':'10406',
-    u'手機':'10401', u'電話':'10402',
-    u'水費':'10501', u'電費':'10502', u'瓦斯':'10503',
-    u'房租':'10601', u'房貸':'10602', u'家具':'10603', u'家電':'10604', u'裝潢':'10605', u'房屋險':'10606',
-    u'電器':'10604',
-    u'請客':'10701', u'禮物':'10702', u'紅包':'10703',
-    u'休閒':'10801', u'展覽':'10802', u'電影':'10803', u'音樂':'10804', u'漫畫':'10805', u'書籍':'10806', u'遊戲':'10807',
-    u'書':'10806',
-    u'上課':'10901', u'報紙':'10902', u'參考書':'10903', u'考試':'10904', u'學費':'10905', u'補習':'10907',
-    u'看病': '11001', u'掛號':'11001', u'藥物':'11002', u'保險':'11003', u'醫療險':'11004',
-    u'藥':'11002',
-    u'衣服':'11101', u'配件':'11102', u'內衣':'11103', u'健身':'11104', u'理髮':'11105', u'化妝品':'11106', u'美容':'11107', u'洗衣':'11108',
-    u'剪髮':'11105',
-    u'加油':'11201', u'停車':'11202', u'汽車險':'11203', u'汽車稅':'11204', u'車貸':'11205', u'駕訓班':'11206', u'過路費':'11207',
-    u'年金':'11301', u'所得稅':'11302', u'營業稅':'11305',
-    u'旅行':'11401', u'房屋':'11402', u'汽車':'11403', u'機車':'11404', u'結婚':'11405', u'生產':'11406', u'看護':'11407',
-    u'匯款':'19901', u'零用':'19902', u'預付':'19904', u'提款':'19906', u'儲值':'19908', u'其他':'19909',
-    u'轉帳':'19901', u'代買':'19904', u'代購':'19904',
+CATS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'cats.json')
 
-    # income
-    u'薪水': '11',
-    #u'預付': '12',
-    u'獎金': '13',
-    #u'額外營收': '14',
-    #u'營業收入': '15',
-    u'營收': '15',
-    u'收錢': '19',
-    u'收款': '19',
-}
+def load_cats():
+    with open(CATS_PATH) as f:
+        return json.load(f)
 
-cats_income = {
-    u'薪水': '11',
-    #u'預付': '12',
-    u'獎金': '13',
-    #u'額外營收': '14',
-    #u'營業收入': '15',
-    u'營收': '15',
-    u'收錢': '19',
-    u'收款': '19',
-}
+def save_cats(data):
+    tmp = CATS_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+        f.write('\n')
+    os.replace(tmp, CATS_PATH)
+
+def reindex():
+    """Rebuild the name lookups and the parsing regexes from CATS."""
+    global name_to, canonical, entry_pattern, entry_prefix
+    name_to, canonical = {}, {}
+    for mode in ('expense', 'income'):
+        for cid, names in CATS[mode].items():
+            canonical[cid] = names[0]
+            for name in names:
+                name_to[name] = (mode, cid)
+    # Longest name first, so 書籍 wins over 書 and 汽車險 over 汽車.
+    alt = '|'.join(re.escape(n) for n in sorted(name_to, key=len, reverse=True))
+    entry_pattern = re.compile(r"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % alt)
+    # The leading part of the same pattern: a message starting with a known
+    # category is an attempt at an entry, so failing to parse is worth a hint.
+    # Anything else is ordinary chat and is ignored, which matters in groups.
+    entry_prefix = re.compile(r"(\d{8})?\s*(%s)" % alt)
+
+CATS = load_cats()
+reindex()
 
 def load_config():
     with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
@@ -133,15 +125,92 @@ async def usage(update, context):
     logging.info('/help')
     await context.bot.send_message(chat_id=update.message.chat_id, text=USAGE)
 
+def format_cats():
+    """Expense grouped by parent category, income last, aliases joined by =."""
+    groups = {}
+    for cid, names in CATS['expense'].items():
+        groups.setdefault(cid[:3], []).append((cid, names))
+    lines = ['Expense']
+    for parent in sorted(groups):
+        lines.append('  ' + ' '.join('='.join(names)
+                                     for _, names in sorted(groups[parent])))
+    lines.append('')
+    lines.append('Income')
+    lines.append('  ' + ' '.join('='.join(names)
+                                 for _, names in sorted(CATS['income'].items())))
+    return '\n'.join(lines)
+
 async def categories(update, context):
-    logging.info('/cat')
-    text = ' '.join(sorted(cats.keys(), key=cats.get))
-    await context.bot.send_message(chat_id=update.message.chat_id, text=text)
+    logging.info('/cats')
+    await context.bot.send_message(chat_id=update.message.chat_id,
+                                   text=format_cats())
+
+ALIAS_USAGE = ('Usage: /alias <new>=<existing>\n'
+               'e.g. /alias 買菜=食物\n'
+               '/cats lists every category')
+
+def add_alias(arg):
+    """Add <new>=<existing> to cats.json. Returns the reply text."""
+    if '=' not in arg:
+        return ALIAS_USAGE
+    new, existing = (part.strip() for part in arg.split('=', 1))
+    if not new or not existing:
+        return ALIAS_USAGE
+    if existing not in name_to:
+        return 'No category called %s. /cats lists them.' % existing
+    if re.search(r'\s', new) or new.isdigit():
+        return '%s cannot be an alias (no spaces, not all digits).' % new
+    mode, cid = name_to[existing]
+    if new in name_to:
+        if name_to[new] == (mode, cid):
+            return '%s=%s already exists.' % (new, canonical[cid])
+        return '%s is already an alias of %s.' % (new, canonical[name_to[new][1]])
+    CATS[mode][cid].append(new)
+    save_cats(CATS)
+    reindex()
+    return 'Added %s=%s' % (new, canonical[cid])
 
 async def alias(update, context):
     logging.info('/alias %s', update.message.text)
-    # Fixed a bug from original: 'text' was undefined here
-    await context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
+    reply = add_alias(' '.join(context.args))
+    await context.bot.send_message(chat_id=update.message.chat_id, text=reply)
+
+UNALIAS_USAGE = ('Usage: /unalias <name> [name ...]\n'
+                 'e.g. /unalias 買菜 咖啡\n'
+                 "A category's last remaining name is never removed.")
+
+def remove_aliases(args):
+    """Remove one or more names. Every category keeps at least one."""
+    names = [n for n in re.split(r'[\s,]+', ' '.join(args)) if n]
+    if not names:
+        return UNALIAS_USAGE
+    replies, changed = [], False
+    for name in names:
+        if name not in name_to:
+            replies.append('%s: no such category or alias' % name)
+            continue
+        mode, cid = name_to[name]
+        siblings = CATS[mode][cid]
+        if len(siblings) == 1:
+            replies.append('%s: only name left for this category, kept' % name)
+            continue
+        was_canonical = siblings[0] == name
+        siblings.remove(name)
+        changed = True
+        reindex()
+        if was_canonical:
+            replies.append('Removed %s; this category is now %s'
+                           % (name, siblings[0]))
+        else:
+            replies.append('Removed %s from %s' % (name, siblings[0]))
+    if changed:
+        save_cats(CATS)
+    return '\n'.join(replies)
+
+async def unalias(update, context):
+    logging.info('/unalias %s', update.message.text)
+    reply = remove_aliases(context.args)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=reply)
 
 async def handler(update, context):
     chat_id = update.message.chat_id
@@ -167,12 +236,8 @@ async def handler(update, context):
             await context.bot.send_message(chat_id=chat_id, text=err)
             return
 
-        genre_or_category = data.get('genre_id', data['category_id'])
-
-        # Python 3 equivalent of getting a dict key by value
-        cat_list = list(cats.keys())
-        val_list = list(cats.values())
-        cat = cat_list[val_list.index(genre_or_category)]
+        # income has only category_id
+        cat = canonical[data.get('genre_id', data['category_id'])]
 
         reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
         await context.bot.send_message(chat_id=chat_id, text=reply_text)
@@ -199,36 +264,30 @@ async def month(update, context):
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
-# The leading part of parse()'s pattern: a message that starts with a known
-# category is an attempt at an entry, so a failure to parse is worth a hint.
-# Anything else is ordinary chat and is ignored, which matters in group chats.
-entry_prefix = re.compile(r"(\d{8})?\s*(%s)" % ('|'.join(cats.keys())))
-
 def parse(text):
-    pat = re.compile(r"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
-    m = pat.match(text)
-    if m:
-        date, cat, place, amount = m.groups()
-        if date:
-            date = re.sub(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', date)
-        logging.info('foo: %r', (cat, cats_income, cat in cats_income))
-        if cat in cats_income:
-            return {
-                'category_id': cats_income[cat],
-                'amount': int(amount),
-                'place': place,
-                'date': date,
-                'mode': 'income'
-            }
-        else:
-            return {
-                'category_id': cats[cat][:3],
-                'genre_id': cats[cat],
-                'amount': int(amount),
-                'place': place,
-                'date': date,
-                'mode': 'payment'
-            }
+    m = entry_pattern.match(text)
+    if not m:
+        return
+    date, cat, place, amount = m.groups()
+    if date:
+        date = re.sub(r'(\d{4})(\d{2})(\d{2})', r'\1-\2-\3', date)
+    mode, cid = name_to[cat]
+    if mode == 'income':
+        return {
+            'category_id': cid,
+            'amount': int(amount),
+            'place': place,
+            'date': date,
+            'mode': 'income'
+        }
+    return {
+        'category_id': cid[:3],
+        'genre_id': cid,
+        'amount': int(amount),
+        'place': place,
+        'date': date,
+        'mode': 'payment'
+    }
 
 async def post_init(application):
     await application.bot.set_my_commands(
@@ -249,9 +308,10 @@ def main():
                    .build())
 
     application.add_handler(CommandHandler(['help', 'start'], usage))
-    application.add_handler(CommandHandler('cat', categories))
+    application.add_handler(CommandHandler(['cats', 'cat'], categories))
     application.add_handler(CommandHandler('month', month))
     application.add_handler(CommandHandler('alias', alias))
+    application.add_handler(CommandHandler('unalias', unalias))
     application.add_handler(MessageHandler(filters.Regex(r'/cancel_(\d+)'), cancel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
 

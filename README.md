@@ -31,7 +31,9 @@ Refuses to start if the token is dead, and tells you to run `./auth.sh`.
 | `薪水 公司 60000` | log income |
 | `/cancel_123` | undo (id comes back in the reply) |
 | `/help` | usage |
-| `/cat` | list categories |
+| `/cats` | list categories, aliases joined by `=` |
+| `/alias 買菜=食物` | add an alias (idempotent) |
+| `/unalias 買菜 咖啡` | remove aliases (never the last name) |
 | `/month` | this month's total |
 
 Commands are published to Telegram on startup, so they appear in the client's `/` menu.
@@ -39,4 +41,5 @@ Commands are published to Telegram on startup, so they appear in the client's `/
 ## Files
 
 - `oauth_token.json` — Zaim access token. Gitignored. **Copy it when redeploying**, or re-run `./auth.sh` on the new host.
+- `cats.json` — categories and aliases. First name in each list is the canonical one shown in replies.
 - `dump.py` — export all Zaim records to jsonl.
