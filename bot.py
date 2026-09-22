@@ -80,13 +80,29 @@ def load_config():
         return json.load(f)
 
 def init_zaim(config):
-    # OAuth 1.0a tokens do not expire; authorize once with --auth, then reuse.
+    # Authorize once with --auth. The token then lasts until the app is
+    # revoked, provided 永続的に許可 was ticked on Zaim's approval page.
     try:
-        return zaim_api.from_token(config['zaim']['consumer_key'],
-                                   config['zaim']['consumer_secret'])
+        api = zaim_api.from_token(config['zaim']['consumer_key'],
+                                  config['zaim']['consumer_secret'])
     except FileNotFoundError:
         sys.exit('No %s. Run `uv run python bot.py --auth` once to authorize.'
                  % zaim_api.TOKEN_PATH)
+    # Fail at startup rather than on the first message days later.
+    r = api.verify()
+    if r.get('error'):
+        sys.exit('Zaim rejected the saved token (%s). Run '
+                 '`uv run python bot.py --auth` to reauthorize.' % r.get('message'))
+    return api
+
+REAUTH_HINT = ('Zaim rejected the request: %s\n'
+               'If this is 401, the access token expired. Reauthorize with '
+               '`bot.py --auth` and tick 家計簿へのアクセスを永続的に許可する.')
+
+def zaim_error(resp):
+    """Return a user-facing message if the Zaim call failed, else None."""
+    if isinstance(resp, dict) and resp.get('error'):
+        return REAUTH_HINT % resp.get('message', resp['error'])
 
 async def categories(update, context):
     logging.info('/cat')
@@ -114,6 +130,10 @@ async def handler(update, context):
                 func = z.payment
             resp = await asyncio.to_thread(lambda: func(**data))
             logging.info('%s: %s', mode, resp)
+            err = zaim_error(resp)
+            if err:
+                await context.bot.send_message(chat_id=chat_id, text=err)
+                return
 
             genre_or_category = data.get('genre_id', data['category_id'])
 
@@ -139,6 +159,10 @@ async def month(update, context):
     r = await asyncio.to_thread(z.money, mode='payment',
                                 start_date=start.isoformat(),
                                 end_date=today.isoformat())
+    err = zaim_error(r)
+    if err:
+        await context.bot.send_message(chat_id=update.message.chat_id, text=err)
+        return
     amount = sum(i['amount'] for i in r['money'])
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
