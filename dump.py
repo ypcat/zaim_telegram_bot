@@ -12,29 +12,22 @@ import json
 
 import zaim_api
 
-def oauth():
-    config = json.load(open('config.json'))
-    api = zaim_api.Api(consumer_key=config['zaim']['consumer_key'],
-                       consumer_secret=config['zaim']['consumer_secret'])
-    request_token = api.get_request_token('oob')
-    print('https://auth.zaim.net/users/auth?oauth_token=' + request_token['oauth_token'])
-    token = input('Paste authorized token: ')
-    oauth_token = api.get_access_token(token)
-    with open('oauth_token.json','w') as f:
-        json.dump(oauth_token, f)
+def load_config():
+    with open('config.json') as f:
+        return json.load(f)
 
 def auth():
-    config = json.load(open('config.json'))
-    oauth_token = json.load(open('oauth_token.json'))
-    api = zaim_api.Api(consumer_key=config['zaim']['consumer_key'],
-                       consumer_secret=config['zaim']['consumer_secret'],
-                       access_token=oauth_token['oauth_token'],
-                       access_token_secret=oauth_token['oauth_token_secret'])
+    config = load_config()
+    ck = config['zaim']['consumer_key']
+    cs = config['zaim']['consumer_secret']
+    try:
+        api = zaim_api.from_token(ck, cs)
+    except FileNotFoundError:
+        return zaim_api.authorize(ck, cs)
     r = api.verify()
     if r.get('error'):
         print(r)
-        oauth()
-        return auth()
+        return zaim_api.authorize(ck, cs)
     return api
 
 def main():

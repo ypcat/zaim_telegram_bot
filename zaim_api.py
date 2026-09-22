@@ -6,12 +6,17 @@ released 2019), which pulled in `future`/`six`/`tabulate` for Python 2
 compatibility. Only the endpoints this project uses are implemented.
 """
 
+import json
+import os
 from urllib.parse import parse_qsl
 
 import requests
 from requests_oauthlib import OAuth1
 
 BASE_URL = 'https://api.zaim.net/v2'
+AUTH_URL = 'https://auth.zaim.net/users/auth'
+TOKEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'oauth_token.json')
 
 
 class Api:
@@ -84,3 +89,45 @@ class Api:
 
     def delete(self, mode, money_id):
         return self._request('DELETE', '/home/money/%s/%d' % (mode, money_id))
+
+
+# --- access token persistence -------------------------------------------
+#
+# Zaim uses OAuth 1.0a, which has no refresh mechanism: there is no refresh
+# token and no renewal endpoint. Token lifetime is decided entirely at
+# authorization time by one checkbox on Zaim's approval page:
+#
+#   [x] 家計簿へのアクセスを永続的に許可する
+#
+# Ticked, the token lasts until the app is revoked in Zaim's UI. Left
+# unticked, it expires 24 hours later and the only recovery is to authorize
+# again. The checkbox is only offered if the application is registered in the
+# Zaim Developers Center with 永続許可 (permanent permission) enabled.
+
+def from_token(consumer_key, consumer_secret, token_path=TOKEN_PATH):
+    """Build an authenticated Api from the saved access token."""
+    with open(token_path) as f:
+        token = json.load(f)
+    return Api(consumer_key, consumer_secret,
+               token['oauth_token'], token['oauth_token_secret'])
+
+
+def authorize(consumer_key, consumer_secret, token_path=TOKEN_PATH,
+              prompt=input):
+    """Run the interactive OAuth 1.0a flow once and save the access token."""
+    api = Api(consumer_key, consumer_secret)
+    request_token = api.get_request_token('oob')
+    print('Open this URL and approve access:')
+    print('  %s?oauth_token=%s' % (AUTH_URL, request_token['oauth_token']))
+    print()
+    print('  IMPORTANT: tick "家計簿へのアクセスを永続的に許可する" on that page.')
+    print('  Without it the token expires in 24 hours. If the checkbox is not')
+    print('  shown, enable 永続許可 for this app at https://dev.zaim.net/ first.')
+    print()
+    verifier = prompt('verifier code: ').strip()
+    token = api.get_access_token(verifier)
+    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(token, f)
+    print('Saved access token to %s' % token_path)
+    return api
