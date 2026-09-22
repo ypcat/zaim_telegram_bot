@@ -1,14 +1,14 @@
 # /// script
-# requires-python = ">=3.9"
+# requires-python = ">=3.14"
 # dependencies = [
 #     "pyquery",
+#     "python-telegram-bot>=22.8",
 #     "requests",
-#     "python-telegram-bot>=13.0,<20.0",
-#     "zaim",
-#     "setuptools<82",
+#     "requests-oauthlib",
 # ]
 # ///
 
+import asyncio
 import datetime
 import json
 import os
@@ -18,12 +18,19 @@ import logging
 
 import pyquery
 import requests
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
-import zaim
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, filters)
+
+import zaim_api
 
 logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO)
+
+# httpx logs every request URL at INFO, and the Telegram API embeds the bot
+# token in the path (.../bot<TOKEN>/getUpdates). Keep it out of the logs.
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 cats = {
     u'食物':'10101', u'點心':'10102', u'早餐':'10103', u'午餐':'10104', u'晚餐':'10105',
@@ -89,7 +96,7 @@ def auth(z, config):
         q = pyquery.PyQuery(r.text)
         oauth_verifier = q('code').text()
         access_token = z.get_access_token(oauth_verifier)
-        z = zaim.Api(
+        z = zaim_api.Api(
             consumer_key = config['zaim']['consumer_key'],
             consumer_secret = config['zaim']['consumer_secret'],
             access_token = access_token['oauth_token'],
@@ -97,25 +104,29 @@ def auth(z, config):
         )
     return z
 
+async def ensure_auth():
+    # The Zaim client is synchronous; keep it off the event loop.
+    global z
+    z = await asyncio.to_thread(auth, z, config)
+
 def load_config():
     with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
         return json.load(f)
 
 def init_zaim(config):
-    return zaim.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
+    return zaim_api.Api(config['zaim']['consumer_key'], config['zaim']['consumer_secret'])
 
-def categories(update, context):
+async def categories(update, context):
     logging.info('/cat')
     text = ' '.join(sorted(cats.keys(), key=cats.get))
-    context.bot.send_message(chat_id=update.message.chat_id, text=text)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=text)
 
-def alias(update, context):
+async def alias(update, context):
     logging.info('/alias %s', update.message.text)
     # Fixed a bug from original: 'text' was undefined here
-    context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
 
-def handler(update, context):
-    global config, z
+async def handler(update, context):
     chat_id = update.message.chat_id
     text = update.message.text
     name = update.message.from_user.name
@@ -124,45 +135,44 @@ def handler(update, context):
         data = parse(text)
         logging.info('data: %s', data)
         if data:
-            z = auth(z, config)
+            await ensure_auth()
             mode = data.pop('mode')
             if mode == 'income':
                 func = z.income
             else:
                 func = z.payment
-            resp = func(**data)
+            resp = await asyncio.to_thread(lambda: func(**data))
             logging.info('%s: %s', mode, resp)
-            
-            genre_or_category = data.get('genre_id', data['category_id']) 
-            
+
+            genre_or_category = data.get('genre_id', data['category_id'])
+
             # Python 3 equivalent of getting a dict key by value
             cat_list = list(cats.keys())
             val_list = list(cats.values())
             cat = cat_list[val_list.index(genre_or_category)]
-            
+
             reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
-            context.bot.send_message(chat_id=chat_id, text=reply_text)
-            month(update, context)
+            await context.bot.send_message(chat_id=chat_id, text=reply_text)
+            await month(update, context)
 
-def cancel(update, context):
-    global config, z
-    # RegexHandler group extraction modernized for v13
-    money_id = int(context.match.group(1)) 
+async def cancel(update, context):
+    money_id = int(context.match.group(1))
     logging.info('cancel %s', money_id)
-    z = auth(z, config)
-    z.delete(mode='payment', money_id=money_id)
+    await ensure_auth()
+    await asyncio.to_thread(z.delete, mode='payment', money_id=money_id)
     reply_text = f'cancel {money_id}'
-    context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
-def month(update, context):
-    global config, z
+async def month(update, context):
     today = datetime.date.today()
     start = today - datetime.timedelta(days=today.day - 1)
-    z = auth(z, config)
-    r = z.money(mode='payment', start_date=start.isoformat(), end_date=today.isoformat())
+    await ensure_auth()
+    r = await asyncio.to_thread(z.money, mode='payment',
+                                start_date=start.isoformat(),
+                                end_date=today.isoformat())
     amount = sum(i['amount'] for i in r['money'])
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
-    context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
 def parse(text):
     pat = re.compile(r"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
@@ -193,20 +203,17 @@ def parse(text):
 def main():
     global config, z
     config = load_config()
-    # use_context=True is required for v13+ compatibility
-    updater = Updater(token=config['telegram']['token'], use_context=True) 
-    dispatcher = updater.dispatcher
+    application = ApplicationBuilder().token(config['telegram']['token']).build()
     z = init_zaim(config)
-    
-    dispatcher.add_handler(CommandHandler('cat', categories))
-    dispatcher.add_handler(CommandHandler('month', month))
-    dispatcher.add_handler(CommandHandler('alias', alias))
-    # RegexHandler was deprecated, replaced with MessageHandler + Filters.regex
-    dispatcher.add_handler(MessageHandler(Filters.regex(r'/cancel_(\d+)'), cancel))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handler))
-    
+
+    application.add_handler(CommandHandler('cat', categories))
+    application.add_handler(CommandHandler('month', month))
+    application.add_handler(CommandHandler('alias', alias))
+    application.add_handler(MessageHandler(filters.Regex(r'/cancel_(\d+)'), cancel))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+
     logging.info('Start polling')
-    updater.start_polling()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
