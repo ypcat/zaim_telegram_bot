@@ -30,8 +30,11 @@ Refuses to start if the token is dead, and tells you to run `./auth.sh`.
 | `20260521 晚餐 鼎泰豐 850` | log with a date |
 | `薪水 公司 60000` | log income |
 | `/cancel_123` | undo (id comes back in the reply) |
+| `/help` | usage |
 | `/cat` | list categories |
 | `/month` | this month's total |
+
+Commands are published to Telegram on startup, so they appear in the client's `/` menu.
 
 ## Files
 

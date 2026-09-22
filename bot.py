@@ -15,6 +15,7 @@ import re
 import sys
 import logging
 
+from telegram import BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters)
 
@@ -28,6 +29,30 @@ logging.basicConfig(
 # token in the path (.../bot<TOKEN>/getUpdates). Keep it out of the logs.
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+# Published to Telegram with setMyCommands so they show in the client's
+# command menu. /cancel_<id> is omitted: the id varies, so it cannot be
+# registered as a static command.
+COMMANDS = [
+    ('help', 'Show usage'),
+    ('cat', 'List category keywords'),
+    ('month', "This month's total"),
+]
+
+USAGE = '''Log an entry by typing:  <category> <place> <amount>
+
+  午餐 摩斯 120
+  20260521 晚餐 鼎泰豐 850   (date first, YYYYMMDD)
+  薪水 公司 60000            (income category, logged as income)
+
+Each reply carries a /cancel_<id> link to undo that entry.
+
+/help   this message
+/cat    list all category keywords
+/month  this month's total'''
+
+PARSE_HINT = ("Couldn't parse that. Expected: <category> <place> <amount>\n"
+              'e.g. 午餐 摩斯 120   -   /help for the full syntax')
 
 cats = {
     u'食物':'10101', u'點心':'10102', u'早餐':'10103', u'午餐':'10104', u'晚餐':'10105',
@@ -104,6 +129,10 @@ def zaim_error(resp):
     if isinstance(resp, dict) and resp.get('error'):
         return REAUTH_HINT % resp.get('message', resp['error'])
 
+async def usage(update, context):
+    logging.info('/help')
+    await context.bot.send_message(chat_id=update.message.chat_id, text=USAGE)
+
 async def categories(update, context):
     logging.info('/cat')
     text = ' '.join(sorted(cats.keys(), key=cats.get))
@@ -122,29 +151,32 @@ async def handler(update, context):
     if text:
         data = parse(text)
         logging.info('data: %s', data)
-        if data:
-            mode = data.pop('mode')
-            if mode == 'income':
-                func = z.income
-            else:
-                func = z.payment
-            resp = await asyncio.to_thread(lambda: func(**data))
-            logging.info('%s: %s', mode, resp)
-            err = zaim_error(resp)
-            if err:
-                await context.bot.send_message(chat_id=chat_id, text=err)
-                return
+        if not data:
+            if entry_prefix.match(text):
+                await context.bot.send_message(chat_id=chat_id, text=PARSE_HINT)
+            return
+        mode = data.pop('mode')
+        if mode == 'income':
+            func = z.income
+        else:
+            func = z.payment
+        resp = await asyncio.to_thread(lambda: func(**data))
+        logging.info('%s: %s', mode, resp)
+        err = zaim_error(resp)
+        if err:
+            await context.bot.send_message(chat_id=chat_id, text=err)
+            return
 
-            genre_or_category = data.get('genre_id', data['category_id'])
+        genre_or_category = data.get('genre_id', data['category_id'])
 
-            # Python 3 equivalent of getting a dict key by value
-            cat_list = list(cats.keys())
-            val_list = list(cats.values())
-            cat = cat_list[val_list.index(genre_or_category)]
+        # Python 3 equivalent of getting a dict key by value
+        cat_list = list(cats.keys())
+        val_list = list(cats.values())
+        cat = cat_list[val_list.index(genre_or_category)]
 
-            reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
-            await context.bot.send_message(chat_id=chat_id, text=reply_text)
-            await month(update, context)
+        reply_text = f"Entered {cat} {data['place']} ${data['amount']}\n/cancel_{resp['money']['id']}"
+        await context.bot.send_message(chat_id=chat_id, text=reply_text)
+        await month(update, context)
 
 async def cancel(update, context):
     money_id = int(context.match.group(1))
@@ -166,6 +198,11 @@ async def month(update, context):
     amount = sum(i['amount'] for i in r['money'])
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
+
+# The leading part of parse()'s pattern: a message that starts with a known
+# category is an attempt at an entry, so a failure to parse is worth a hint.
+# Anything else is ordinary chat and is ignored, which matters in group chats.
+entry_prefix = re.compile(r"(\d{8})?\s*(%s)" % ('|'.join(cats.keys())))
 
 def parse(text):
     pat = re.compile(r"(\d{8})?\s*(%s)\s*(.*\D)\s*(\d+)元?" % ('|'.join(cats.keys())))
@@ -193,6 +230,11 @@ def parse(text):
                 'mode': 'payment'
             }
 
+async def post_init(application):
+    await application.bot.set_my_commands(
+        [BotCommand(name, description) for name, description in COMMANDS])
+    logging.info('Published %d commands to Telegram', len(COMMANDS))
+
 def main():
     global config, z
     config = load_config()
@@ -201,8 +243,12 @@ def main():
                            config['zaim']['consumer_secret'])
         return
     z = init_zaim(config)
-    application = ApplicationBuilder().token(config['telegram']['token']).build()
+    application = (ApplicationBuilder()
+                   .token(config['telegram']['token'])
+                   .post_init(post_init)
+                   .build())
 
+    application.add_handler(CommandHandler(['help', 'start'], usage))
     application.add_handler(CommandHandler('cat', categories))
     application.add_handler(CommandHandler('month', month))
     application.add_handler(CommandHandler('alias', alias))
