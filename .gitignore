@@ -71,3 +71,4 @@ target/
 oauth_token.json
 erl_crash.dump
 state.json
+*.tmp

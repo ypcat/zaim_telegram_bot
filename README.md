@@ -9,10 +9,12 @@ cp config.json.sample config.json   # fill in telegram token + zaim consumer key
 ./auth.sh                           # one time
 ```
 
-`auth.sh` prints a Zaim URL. Open it, approve, paste the code back.
+Zaim tokens expire after about a day, whatever the approval page says. Put
+`email` and `password` under `zaim` in `config.json` and the bot renews the
+token itself at startup and whenever Zaim answers 401.
 
-**Tick `家計簿へのアクセスを永続的に許可する` on that page** — without it the token dies in 24h.
-If the box isn't shown, enable `Permanently accessible to your account book` for the app at https://dev.zaim.net/ first.
+Without them, `./auth.sh` does it by hand: it prints a Zaim URL, you approve
+and paste the code back. You'd be doing that daily.
 
 ## Run
 
@@ -20,7 +22,8 @@ If the box isn't shown, enable `Permanently accessible to your account book` for
 ./run.sh
 ```
 
-Refuses to start if the token is dead, and tells you to run `./auth.sh`.
+Renews an expired token on its own if `zaim.email`/`zaim.password` are set;
+otherwise refuses to start and tells you to run `./auth.sh`.
 
 ## Usage
 
@@ -101,6 +104,6 @@ problem, not the bot: add the two Standard* lines above and
 
 ## Files
 
-- `oauth_token.json` — Zaim access token. Gitignored. **Copy it when redeploying**, or re-run `./auth.sh` on the new host.
+- `oauth_token.json` — current Zaim access token, rewritten on renewal. Gitignored, mode 0600.
 - `cats.json` — categories and aliases. First name in each list is the canonical one shown in replies.
 - `dump.py` — export all Zaim records to jsonl.

@@ -100,28 +100,63 @@ def load_config():
     with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
         return json.load(f)
 
+def can_reauth():
+    return bool(config['zaim'].get('email') and config['zaim'].get('password'))
+
+def reauth():
+    """Log in with the account password and save a fresh token. Blocking."""
+    c = config['zaim']
+    api = zaim_api.authorize_headless(c['consumer_key'], c['consumer_secret'],
+                                      c['email'], c['password'])
+    logging.info('Reauthorized with Zaim using the account password')
+    return api
+
 def init_zaim(config):
-    # Authorize once with --auth. The token then lasts until the app is
-    # revoked, provided 永続的に許可 was ticked on Zaim's approval page.
+    # Zaim tokens last about 24 hours. With zaim.email and zaim.password in
+    # config.json the bot renews them itself; without, run ./auth.sh by hand.
     try:
         api = zaim_api.from_token(config['zaim']['consumer_key'],
                                   config['zaim']['consumer_secret'])
+        r = api.verify()
     except FileNotFoundError:
-        sys.exit('No %s. Run `uv run python bot.py --auth` once to authorize.'
-                 % zaim_api.TOKEN_PATH)
-    # Fail at startup rather than on the first message days later.
-    r = api.verify()
+        r = {'error': True, 'message': 'no saved token'}
     if r.get('error'):
-        sys.exit('Zaim rejected the saved token (%s). Run '
-                 '`uv run python bot.py --auth` to reauthorize.' % r.get('message'))
+        if not can_reauth():
+            sys.exit('Zaim token unusable (%s). Run ./auth.sh, or add '
+                     'zaim.email and zaim.password to config.json.'
+                     % r.get('message'))
+        logging.warning('Zaim token unusable (%s), reauthorizing', r.get('message'))
+        try:
+            api = reauth()
+        except RuntimeError as e:
+            sys.exit('Automatic Zaim reauthorization failed: %s' % e)
+        r = api.verify()
     me = r.get('me', {})
     logging.info('Zaim account %s (%s), %d entries',
                  me.get('id'), me.get('currency_code'), me.get('input_count', 0))
     return api
 
+def unauthorized(resp):
+    return (isinstance(resp, dict) and resp.get('error')
+            and '401' in str(resp.get('message')))
+
+async def zaim_call(method, **kwargs):
+    """Call the Zaim API; on a 401, reauthorize once and retry."""
+    global z
+    resp = await asyncio.to_thread(getattr(z, method), **kwargs)
+    if unauthorized(resp) and can_reauth():
+        logging.warning('Zaim token expired, reauthorizing')
+        try:
+            z = await asyncio.to_thread(reauth)
+        except RuntimeError as e:
+            logging.error('Automatic Zaim reauthorization failed: %s', e)
+            return resp
+        resp = await asyncio.to_thread(getattr(z, method), **kwargs)
+    return resp
+
 REAUTH_HINT = ('Zaim rejected the request: %s\n'
-               'If this is 401, the access token expired. Reauthorize with '
-               '`bot.py --auth` and tick 家計簿へのアクセスを永続的に許可する.')
+               'If this is 401 the token expired and could not be renewed. '
+               'Check zaim.email/password in config.json, or run ./auth.sh.')
 
 def who(update):
     return update.message.from_user.name
@@ -238,11 +273,7 @@ async def handler(update, context):
                 logging.debug('%s ignored %r', name, text)
             return
         mode = data.pop('mode')
-        if mode == 'income':
-            func = z.income
-        else:
-            func = z.payment
-        resp = await asyncio.to_thread(lambda: func(**data))
+        resp = await zaim_call('income' if mode == 'income' else 'payment', **data)
         err = zaim_error(resp)
         if err:
             logging.warning('%s %s rejected by Zaim: %s', name, mode,
@@ -261,7 +292,7 @@ async def handler(update, context):
 
 async def cancel(update, context):
     money_id = int(context.match.group(1))
-    resp = await asyncio.to_thread(z.delete, mode='payment', money_id=money_id)
+    resp = await zaim_call('delete', mode='payment', money_id=money_id)
     err = zaim_error(resp)
     if err:
         logging.warning('%s cancel %s rejected by Zaim: %s', who(update),
@@ -275,9 +306,8 @@ async def cancel(update, context):
 async def month(update, context):
     today = datetime.date.today()
     start = today - datetime.timedelta(days=today.day - 1)
-    r = await asyncio.to_thread(z.money, mode='payment',
-                                start_date=start.isoformat(),
-                                end_date=today.isoformat())
+    r = await zaim_call('money', mode='payment', start_date=start.isoformat(),
+                        end_date=today.isoformat())
     err = zaim_error(r)
     if err:
         await context.bot.send_message(chat_id=update.message.chat_id, text=err)

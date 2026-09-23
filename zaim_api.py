@@ -8,6 +8,8 @@ compatibility. Only the endpoints this project uses are implemented.
 
 import json
 import os
+import re
+from html.parser import HTMLParser
 from urllib.parse import parse_qsl
 
 import requests
@@ -94,15 +96,14 @@ class Api:
 # --- access token persistence -------------------------------------------
 #
 # Zaim uses OAuth 1.0a, which has no refresh mechanism: there is no refresh
-# token and no renewal endpoint. Token lifetime is decided entirely at
-# authorization time by one checkbox on Zaim's approval page:
+# token and no renewal endpoint. Its approval page offers
 #
 #   [x] 家計簿へのアクセスを永続的に許可する
 #
-# Ticked, the token lasts until the app is revoked in Zaim's UI. Left
-# unticked, it expires 24 hours later and the only recovery is to authorize
-# again. The checkbox is only offered if the application is registered in the
-# Zaim Developers Center with 永続許可 (permanent permission) enabled.
+# which is documented as making the token permanent, but a token authorized
+# with it (and with permanent access enabled on the app) was still rejected
+# 27 hours later. Treat tokens as lasting about a day; the only recovery is to
+# authorize again, which authorize_headless() below does without a browser.
 
 def from_token(consumer_key, consumer_secret, token_path=TOKEN_PATH):
     """Build an authenticated Api from the saved access token."""
@@ -135,8 +136,89 @@ def authorize(consumer_key, consumer_secret, token_path=TOKEN_PATH,
     except KeyError:
         raise SystemExit('Zaim did not return a token - wrong code? '
                          'Run it again and copy the whole code.')
-    fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    save_token(token, token_path)
+    print('Saved access token to %s' % token_path)
+    return api
+
+
+def save_token(token, token_path=TOKEN_PATH):
+    # Write a fresh 0600 file and rename it over the old one: O_CREAT's mode
+    # would not tighten an existing file, and a crash mid-write must not
+    # leave a truncated token behind.
+    tmp = token_path + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as f:
         json.dump(token, f)
-    print('Saved access token to %s' % token_path)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, token_path)
+
+
+# --- headless authorization ---------------------------------------------
+#
+# In practice Zaim tokens expire after about 24 hours even with permanent
+# access enabled on the app, so an unattended bot has to be able to
+# reauthorize without a browser. This logs in with the account password and
+# submits the approval form, as the original bot did.
+
+class _AuthPage(HTMLParser):
+    """Collect the approval form's inputs and any <code> verifier text."""
+
+    def __init__(self):
+        super().__init__()
+        self.fields, self.code, self._in_code = {}, [], False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'code':
+            self._in_code = True
+        if tag != 'input' or not a.get('name') or a['name'] == 'disagree':
+            return
+        kind = (a.get('type') or 'text').lower()
+        if kind == 'checkbox':
+            # Tick every checkbox, the permanent-access option included. The
+            # original scraper left them unchecked, since lxml reports an
+            # unchecked box's value as None and requests drops None fields.
+            self.fields[a['name']] = a.get('value') or 'on'
+        elif kind == 'radio':
+            if 'checked' in a:
+                self.fields[a['name']] = a.get('value') or 'on'
+        elif a.get('value') is not None:
+            self.fields[a['name']] = a['value']
+
+    def handle_endtag(self, tag):
+        if tag == 'code':
+            self._in_code = False
+
+    def handle_data(self, data):
+        if self._in_code:
+            self.code.append(data)
+
+
+def authorize_headless(consumer_key, consumer_secret, email, password,
+                       token_path=TOKEN_PATH):
+    """Log in, approve access, save the token. Raises RuntimeError on failure."""
+    api = Api(consumer_key, consumer_secret)
+    request_token = api.get_request_token('oob')
+    s = requests.Session()
+    r = s.get('%s?oauth_token=%s' % (AUTH_URL, request_token['oauth_token']))
+    page = _AuthPage()
+    page.feed(r.text)
+    data = dict(page.fields)
+    data['data[User][email]'] = email
+    data['data[User][password]'] = password
+    r = s.post(AUTH_URL, data=data)
+    page = _AuthPage()
+    page.feed(r.text)
+    verifier = ''.join(page.code).strip()
+    if not verifier:
+        m = re.search(r'oauth_verifier=([\w-]+)', r.url + ' ' + r.text)
+        verifier = m.group(1) if m else ''
+    if not verifier:
+        raise RuntimeError('no verifier after login: wrong email/password, '
+                           'or the Zaim login page changed')
+    try:
+        token = api.get_access_token(verifier)
+    except KeyError:
+        raise RuntimeError('Zaim refused the verifier from the login page')
+    save_token(token, token_path)
     return api
