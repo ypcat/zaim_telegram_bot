@@ -375,7 +375,13 @@ async def post_init(application):
         [BotCommand(name, description) for name, description in COMMANDS])
     logging.info('Polling as @%s, published %s', application.bot.username,
                  ', '.join('/' + name for name, _ in COMMANDS))
-    application.create_task(keepalive())
+    # A plain asyncio task: Application.create_task warns when called before
+    # the app is running, and would not cancel the task on shutdown anyway.
+    global keepalive_task
+    keepalive_task = asyncio.create_task(keepalive())
+
+async def post_stop(application):
+    keepalive_task.cancel()
 
 def main():
     global config, z
@@ -389,6 +395,7 @@ def main():
     application = (ApplicationBuilder()
                    .token(config['telegram']['token'])
                    .post_init(post_init)
+                   .post_stop(post_stop)
                    .build())
 
     application.add_handler(CommandHandler(['help', 'start'], usage))
