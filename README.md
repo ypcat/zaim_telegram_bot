@@ -53,54 +53,30 @@ After=network-online.target
 Type=simple
 User=peilun
 WorkingDirectory=/home/peilun/git/zaim_telegram_bot
-ExecStart=/home/peilun/git/zaim_telegram_bot/run.sh
+ExecStart=/home/peilun/git/zaim_telegram_bot/.venv/bin/python bot.py
 Restart=always
 RestartSec=5
-SyslogIdentifier=zaim
-StandardOutput=journal
-StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`Restart=always` matters: without it a crash or a dropped network leaves the
-bot down until you notice.
-
-Logs go to stderr, which systemd sends to the journal by default:
-
-```sh
-journalctl -u zaim -f         # follow
-journalctl -u zaim -n 50      # last 50
-```
-
-Quiet is normal. Three lines at startup, then one per action. Set
-`Environment=LOG_LEVEL=DEBUG` in the unit for per-message detail.
-
-`git pull` does not reload a running service:
+Deploy:
 
 ```sh
 git pull && uv sync --locked && sudo systemctl restart zaim
+journalctl -u zaim -n 20
 ```
 
-`run.sh` execs `.venv/bin/python` directly rather than going through
-`uv run`. With `uv run`, uv stays the service's main process, and a
-snap-packaged uv re-execs through snap-confine into its own namespace and
-cgroup. Python then escapes `zaim.service`'s cgroup, which is what journald
-uses to attribute output to a unit, so nothing it logs reaches
-`journalctl -u zaim`. The symptom is a unit that reports `active (running)`
-with `Tasks: 0` and a few KB of memory.
+`systemctl status zaim` should show `Main PID: ... (python)` with a few tasks
+and tens of MB. `Main PID: ... (uv)` with `Tasks: 0` means the bot is running
+inside a snap-packaged uv's confinement: its output never reaches the journal,
+and it has left the unit's cgroup. Never run the bot through `uv run` under
+systemd.
 
-If nothing appears at all, bisect it:
-
-```sh
-systemctl show zaim -p ExecMainPID --value          # then: ps -o lstart= -p <pid>
-sudo systemctl stop zaim && ./run.sh                # foreground
-```
-
-Startup lines in the foreground but not in the journal means the unit is the
-problem, not the bot: add the two Standard* lines above and
-`systemctl daemon-reload`.
+Quiet is normal: three lines at startup, then one per action.
+`Environment=LOG_LEVEL=DEBUG` adds per-message detail and the hourly Zaim
+keepalive.
 
 ## Files
 

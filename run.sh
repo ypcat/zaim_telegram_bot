@@ -9,10 +9,10 @@ done || true
 export PATH
 
 # Keep .venv in step with uv.lock, but do NOT run the bot through `uv run`.
-# Doing so leaves uv as the service's main process, and a snap-packaged uv
-# re-execs through snap-confine into its own namespace and cgroup. The python
-# process then escapes zaim.service's cgroup, which journald uses to attribute
-# output to a unit, so nothing it logs ever reaches `journalctl -u zaim`.
+# A snap-packaged uv runs python inside the snap's confinement: under systemd
+# its output never reached the journal and it left the unit's cgroup
+# (status showed Main PID uv, Tasks: 0). Exec'ing the venv's python from this
+# unconfined shell avoids both.
 if command -v uv >/dev/null; then
     uv sync --locked --quiet || echo "uv sync failed; using existing .venv" >&2
 fi

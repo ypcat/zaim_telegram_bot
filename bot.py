@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 import logging
 
 from telegram import BotCommand
@@ -125,7 +126,8 @@ def init_zaim(config):
             sys.exit('Zaim token unusable (%s). Run ./auth.sh, or add '
                      'zaim.email and zaim.password to config.json.'
                      % r.get('message'))
-        logging.warning('Zaim token unusable (%s), reauthorizing', r.get('message'))
+        logging.warning('Zaim token unusable (%s, %s), reauthorizing',
+                        r.get('message'), token_age())
         try:
             api = reauth()
         except RuntimeError as e:
@@ -136,6 +138,13 @@ def init_zaim(config):
                  me.get('id'), me.get('currency_code'), me.get('input_count', 0))
     return api
 
+def token_age():
+    try:
+        age = time.time() - os.path.getmtime(zaim_api.TOKEN_PATH)
+    except OSError:
+        return 'unknown age'
+    return '%.1fh old' % (age / 3600)
+
 def unauthorized(resp):
     return (isinstance(resp, dict) and resp.get('error')
             and '401' in str(resp.get('message')))
@@ -145,7 +154,7 @@ async def zaim_call(method, **kwargs):
     global z
     resp = await asyncio.to_thread(getattr(z, method), **kwargs)
     if unauthorized(resp) and can_reauth():
-        logging.warning('Zaim token expired, reauthorizing')
+        logging.warning('Zaim token expired (%s), reauthorizing', token_age())
         try:
             z = await asyncio.to_thread(reauth)
         except RuntimeError as e:
@@ -153,6 +162,24 @@ async def zaim_call(method, **kwargs):
             return resp
         resp = await asyncio.to_thread(getattr(z, method), **kwargs)
     return resp
+
+KEEPALIVE_SECONDS = 3600
+
+async def keepalive():
+    """Verify the token hourly.
+
+    Renews a lapsed token in the background rather than during someone's
+    entry. The token age logged on renewal also shows whether Zaim's expiry is
+    fixed from issue or slides with use: if tokens poked hourly never expire,
+    it slides.
+    """
+    while True:
+        await asyncio.sleep(KEEPALIVE_SECONDS)
+        r = await zaim_call('verify')
+        if r.get('error'):
+            logging.warning('Zaim keepalive failed: %s', r.get('message'))
+        else:
+            logging.debug('Zaim keepalive ok, token %s', token_age())
 
 REAUTH_HINT = ('Zaim rejected the request: %s\n'
                'If this is 401 the token expired and could not be renewed. '
@@ -348,6 +375,7 @@ async def post_init(application):
         [BotCommand(name, description) for name, description in COMMANDS])
     logging.info('Polling as @%s, published %s', application.bot.username,
                  ', '.join('/' + name for name, _ in COMMANDS))
+    application.create_task(keepalive())
 
 def main():
     global config, z
