@@ -160,45 +160,58 @@ def save_token(token, token_path=TOKEN_PATH):
 # reauthorize without a browser. This logs in with the account password and
 # submits the approval form, as the original bot did.
 
+class LoginRejected(RuntimeError):
+    """Zaim refused the email/password. Retrying will not help."""
+
+
 class _AuthPage(HTMLParser):
-    """Collect the approval form's inputs and any <code> verifier text."""
+    """Collect the form's inputs, <code> text and Zaim's login error.
+
+    Inputs are collected the way the original pyquery scraper did, which on
+    the live page produces byte-identical POST data: an input's value
+    attribute, checkboxes and radios only when checked, 'disagree' skipped.
+    """
 
     def __init__(self):
         super().__init__()
-        self.fields, self.code, self._in_code = {}, [], False
+        self.fields, self.code, self.error = {}, [], []
+        self._in = None
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == 'code':
-            self._in_code = True
+            self._in = self.code
+        elif a.get('id') == 'loginResultMessage':
+            self._in = self.error
         if tag != 'input' or not a.get('name') or a['name'] == 'disagree':
             return
-        kind = (a.get('type') or 'text').lower()
-        if kind == 'checkbox':
-            # Tick every checkbox, the permanent-access option included. The
-            # original scraper left them unchecked, since lxml reports an
-            # unchecked box's value as None and requests drops None fields.
-            self.fields[a['name']] = a.get('value') or 'on'
-        elif kind == 'radio':
-            if 'checked' in a:
-                self.fields[a['name']] = a.get('value') or 'on'
-        elif a.get('value') is not None:
-            self.fields[a['name']] = a['value']
+        if (a.get('type') or '').lower() in ('checkbox', 'radio'):
+            value = (a.get('value') or 'on') if 'checked' in a else None
+        else:
+            value = a.get('value')
+        if value is None:
+            self.fields.pop(a['name'], None)
+        else:
+            self.fields[a['name']] = value
 
     def handle_endtag(self, tag):
-        if tag == 'code':
-            self._in_code = False
+        if tag in ('code', 'div'):
+            self._in = None
 
     def handle_data(self, data):
-        if self._in_code:
-            self.code.append(data)
+        if self._in is not None:
+            self._in.append(data)
 
 
 def authorize_headless(consumer_key, consumer_secret, email, password,
                        token_path=TOKEN_PATH):
-    """Log in, approve access, save the token. Raises RuntimeError on failure."""
+    """Log in, approve access, save the token.
+
+    Raises LoginRejected when Zaim refuses the credentials, RuntimeError for
+    anything else. Mirrors the original scraper, including its callback URL.
+    """
     api = Api(consumer_key, consumer_secret)
-    request_token = api.get_request_token('oob')
+    request_token = api.get_request_token('http://example.com')
     s = requests.Session()
     r = s.get('%s?oauth_token=%s' % (AUTH_URL, request_token['oauth_token']))
     page = _AuthPage()
@@ -209,13 +222,22 @@ def authorize_headless(consumer_key, consumer_secret, email, password,
     r = s.post(AUTH_URL, data=data)
     page = _AuthPage()
     page.feed(r.text)
+    error = ''.join(page.error).strip()
+    if error:
+        raise LoginRejected('Zaim refused the login: %s' % error)
     verifier = ''.join(page.code).strip()
     if not verifier:
-        m = re.search(r'oauth_verifier=([\w-]+)', r.url + ' ' + r.text)
+        # Also accept a redirect to the callback carrying the verifier.
+        seen = [h.headers.get('Location', '') for h in r.history] + [r.url, r.text]
+        m = re.search(r'oauth_verifier=([\w-]+)', ' '.join(seen))
         verifier = m.group(1) if m else ''
     if not verifier:
-        raise RuntimeError('no verifier after login: wrong email/password, '
-                           'or the Zaim login page changed')
+        dump = os.path.join(os.path.dirname(token_path), 'zaim_auth_debug.html')
+        fd = os.open(dump, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(r.text)
+        raise RuntimeError('no verifier after login (HTTP %s, %s); page saved '
+                           'to %s' % (r.status_code, r.url.split('?')[0], dump))
     try:
         token = api.get_access_token(verifier)
     except KeyError:

@@ -17,6 +17,7 @@ import time
 import logging
 
 from telegram import BotCommand
+from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters)
 
@@ -104,11 +105,26 @@ def load_config():
 def can_reauth():
     return bool(config['zaim'].get('email') and config['zaim'].get('password'))
 
+# Earliest time another renewal may be attempted. A rejected password stops
+# renewal until restart: logging in with it every hour would only risk Zaim
+# locking the account. Any other failure waits an hour.
+renew_after = 0
+
 def reauth():
     """Log in with the account password and save a fresh token. Blocking."""
+    global renew_after
+    if time.time() < renew_after:
+        raise RuntimeError('renewal paused after an earlier failure')
     c = config['zaim']
-    api = zaim_api.authorize_headless(c['consumer_key'], c['consumer_secret'],
-                                      c['email'], c['password'])
+    try:
+        api = zaim_api.authorize_headless(c['consumer_key'], c['consumer_secret'],
+                                          c['email'], c['password'])
+    except zaim_api.LoginRejected:
+        renew_after = float('inf')
+        raise
+    except RuntimeError:
+        renew_after = time.time() + 3600
+        raise
     logging.info('Reauthorized with Zaim using the account password')
     return api
 
@@ -153,12 +169,15 @@ async def zaim_call(method, **kwargs):
     """Call the Zaim API; on a 401, reauthorize once and retry."""
     global z
     resp = await asyncio.to_thread(getattr(z, method), **kwargs)
-    if unauthorized(resp) and can_reauth():
+    if unauthorized(resp) and can_reauth() and time.time() >= renew_after:
         logging.warning('Zaim token expired (%s), reauthorizing', token_age())
         try:
             z = await asyncio.to_thread(reauth)
         except RuntimeError as e:
-            logging.error('Automatic Zaim reauthorization failed: %s', e)
+            if not str(e).startswith('renewal paused'):
+                logging.error('Automatic Zaim reauthorization failed: %s%s', e,
+                              '; not retrying until restart'
+                              if renew_after == float('inf') else '')
             return resp
         resp = await asyncio.to_thread(getattr(z, method), **kwargs)
     return resp
@@ -380,6 +399,14 @@ async def post_init(application):
     global keepalive_task
     keepalive_task = asyncio.create_task(keepalive())
 
+async def on_error(update, context):
+    # A second poller (Conflict) or a network blip is routine: one line, not
+    # a 50 line traceback. Anything else is a bug and keeps its traceback.
+    if isinstance(context.error, (Conflict, NetworkError)):
+        logging.warning('Telegram: %s', context.error)
+    else:
+        logging.error('Unhandled error', exc_info=context.error)
+
 async def post_stop(application):
     keepalive_task.cancel()
 
@@ -390,6 +417,14 @@ def main():
         zaim_api.authorize(config['zaim']['consumer_key'],
                            config['zaim']['consumer_secret'])
         return
+    if '--renew' in sys.argv:
+        # Try the unattended password login once, without starting the bot.
+        try:
+            reauth().verify()
+        except RuntimeError as e:
+            sys.exit('Renewal failed: %s' % e)
+        print('Renewal OK; token saved to %s' % zaim_api.TOKEN_PATH)
+        return
     z = init_zaim(config)
     logging.info('%d category names in %d categories', len(name_to), len(canonical))
     application = (ApplicationBuilder()
@@ -398,6 +433,7 @@ def main():
                    .post_stop(post_stop)
                    .build())
 
+    application.add_error_handler(on_error)
     application.add_handler(CommandHandler(['help', 'start'], usage))
     application.add_handler(CommandHandler(['cats', 'cat'], categories))
     application.add_handler(CommandHandler('month', month))

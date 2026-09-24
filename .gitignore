@@ -72,3 +72,4 @@ oauth_token.json
 erl_crash.dump
 state.json
 *.tmp
+zaim_auth_debug.html
