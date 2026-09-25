@@ -6,8 +6,9 @@ is not deployed. Work on whichever the task names; when unsure, it is `bot.py`.
 
 ## Production: bot.py (Zaim)
 
-- Python 3.14, python-telegram-bot 22 (async), managed with `uv`. Entry points:
-  `run.sh` (service), `auth.sh` (manual Zaim login), `dump.py` (export).
+- Python 3.14, python-telegram-bot 22 (async), managed with `uv`. The whole
+  operational surface is `./run.sh` (service) and `./auth.sh` (fix the Zaim
+  login). Do not add flags or scripts the user would have to remember.
 - `zaim_api.py` is a vendored Zaim OAuth 1.0a client. Its `Api` class is
   deliberately wire-identical to the dead `zaim` 0.2.3 package.
 - Categories and aliases live in `cats.json`; first name in each list is
@@ -15,7 +16,9 @@ is not deployed. Work on whichever the task names; when unsure, it is `bot.py`.
 - **Zaim tokens expire after about a day** despite the "permanent access"
   checkbox. The bot renews them itself with `zaim.email`/`zaim.password` from
   `config.json`, at startup, on any 401, and via an hourly keepalive. Do not
-  suggest removing the password.
+  suggest removing the password. If that fails, `./auth.sh` retries the
+  password, falls back to a browser login, and the running bot reloads the
+  token from disk on its next 401.
 - Runs on host `titan` under systemd at `~/git/zaim_telegram_bot`, not on the
   dev box. uv there is a snap: never run the bot through `uv run` under
   systemd, exec `.venv/bin/python` (see README). Deploy is

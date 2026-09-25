@@ -106,14 +106,17 @@ def can_reauth():
     return bool(config['zaim'].get('email') and config['zaim'].get('password'))
 
 # Earliest time another renewal may be attempted. A rejected password stops
-# renewal until restart: logging in with it every hour would only risk Zaim
-# locking the account. Any other failure waits an hour.
+# renewal until ./auth.sh writes a working token: logging in with it every
+# hour would only risk Zaim locking the account. Other failures wait an hour.
 renew_after = 0
 
-def reauth():
-    """Log in with the account password and save a fresh token. Blocking."""
+def reauth(force=False):
+    """Log in with the account password and save a fresh token. Blocking.
+
+    force: an explicit ./auth.sh, which ignores the pause below.
+    """
     global renew_after
-    if time.time() < renew_after:
+    if not force and time.time() < renew_after:
         raise RuntimeError('renewal paused after an earlier failure')
     c = config['zaim']
     try:
@@ -125,6 +128,7 @@ def reauth():
     except RuntimeError:
         renew_after = time.time() + 3600
         raise
+    renew_after = 0
     logging.info('Reauthorized with Zaim using the account password')
     return api
 
@@ -165,10 +169,29 @@ def unauthorized(resp):
     return (isinstance(resp, dict) and resp.get('error')
             and '401' in str(resp.get('message')))
 
+def reload_token():
+    """The saved token, if ./auth.sh has written a working one since."""
+    global renew_after
+    try:
+        api = zaim_api.from_token(config['zaim']['consumer_key'],
+                                  config['zaim']['consumer_secret'])
+    except FileNotFoundError:
+        return None
+    if api.verify().get('error'):
+        return None
+    renew_after = 0
+    logging.info('Loaded a new Zaim token from %s', zaim_api.TOKEN_PATH)
+    return api
+
 async def zaim_call(method, **kwargs):
-    """Call the Zaim API; on a 401, reauthorize once and retry."""
+    """Call the Zaim API; on a 401, reload or renew the token and retry."""
     global z
     resp = await asyncio.to_thread(getattr(z, method), **kwargs)
+    if unauthorized(resp):
+        fresh = await asyncio.to_thread(reload_token)
+        if fresh:
+            z = fresh
+            return await asyncio.to_thread(getattr(z, method), **kwargs)
     if unauthorized(resp) and can_reauth() and time.time() >= renew_after:
         logging.warning('Zaim token expired (%s), reauthorizing', token_age())
         try:
@@ -176,7 +199,7 @@ async def zaim_call(method, **kwargs):
         except RuntimeError as e:
             if not str(e).startswith('renewal paused'):
                 logging.error('Automatic Zaim reauthorization failed: %s%s', e,
-                              '; not retrying until restart'
+                              '; not retrying, run ./auth.sh'
                               if renew_after == float('inf') else '')
             return resp
         resp = await asyncio.to_thread(getattr(z, method), **kwargs)
@@ -201,8 +224,8 @@ async def keepalive():
             logging.debug('Zaim keepalive ok, token %s', token_age())
 
 REAUTH_HINT = ('Zaim rejected the request: %s\n'
-               'If this is 401 the token expired and could not be renewed. '
-               'Check zaim.email/password in config.json, or run ./auth.sh.')
+               'If this is 401 the Zaim login expired and could not be '
+               'renewed. Run ./auth.sh on the server.')
 
 def who(update):
     return update.message.from_user.name
@@ -414,16 +437,18 @@ def main():
     global config, z
     config = load_config()
     if '--auth' in sys.argv:
+        # ./auth.sh: the password from config.json if present, else a browser.
+        # The running bot picks the new token up on its next 401.
+        if can_reauth():
+            try:
+                reauth(force=True)
+                print('Logged in with the password from config.json. Done.')
+                return
+            except RuntimeError as e:
+                print('Password login failed: %s' % e)
+                print('Falling back to logging in with a browser.\n')
         zaim_api.authorize(config['zaim']['consumer_key'],
                            config['zaim']['consumer_secret'])
-        return
-    if '--renew' in sys.argv:
-        # Try the unattended password login once, without starting the bot.
-        try:
-            reauth().verify()
-        except RuntimeError as e:
-            sys.exit('Renewal failed: %s' % e)
-        print('Renewal OK; token saved to %s' % zaim_api.TOKEN_PATH)
         return
     z = init_zaim(config)
     logging.info('%d category names in %d categories', len(name_to), len(canonical))

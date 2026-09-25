@@ -118,15 +118,11 @@ def authorize(consumer_key, consumer_secret, token_path=TOKEN_PATH,
     """Run the interactive OAuth 1.0a flow once and save the access token."""
     api = Api(consumer_key, consumer_secret)
     request_token = api.get_request_token('oob')
-    print('Open this URL and approve access:')
+    print('Open this URL, log in, approve, and paste the code it shows:')
     print('  %s?oauth_token=%s' % (AUTH_URL, request_token['oauth_token']))
     print()
-    print('  IMPORTANT: tick "家計簿へのアクセスを永続的に許可する" on that page.')
-    print('  Without it the token expires in 24 hours. If the checkbox is not')
-    print('  shown, enable 永続許可 for this app at https://dev.zaim.net/ first.')
-    print()
     try:
-        verifier = prompt('verifier code: ').strip()
+        verifier = prompt('code: ').strip()
     except (EOFError, KeyboardInterrupt):
         raise SystemExit('\nAborted. Existing token left alone.')
     if not verifier:

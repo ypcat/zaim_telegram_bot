@@ -13,17 +13,14 @@ Zaim tokens expire after about a day, whatever the approval page says. Put
 `email` and `password` under `zaim` in `config.json` and the bot renews the
 token itself at startup and whenever Zaim answers 401.
 
-Test the password login without starting the bot:
+**If the bot says the Zaim login expired, run `./auth.sh`.** That's the only
+command to remember. It tries the password from `config.json`, and if Zaim
+rejects it, prints why and falls back to a browser login (open the URL,
+approve, paste the code). The running bot picks up the new token by itself;
+no restart needed.
 
-```sh
-.venv/bin/python bot.py --renew
-```
-
-A rejected password stops automatic renewal until restart, so the bot can't
-get the account locked by retrying hourly. Fix `config.json` and restart.
-
-Without them, `./auth.sh` does it by hand: it prints a Zaim URL, you approve
-and paste the code back. You'd be doing that daily.
+After a rejected password the bot stops retrying, so it can't get the account
+locked, until `./auth.sh` succeeds.
 
 ## Run
 
