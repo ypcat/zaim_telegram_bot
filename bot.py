@@ -21,6 +21,7 @@ from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters)
 
+import requests
 import zaim_api
 
 logging.basicConfig(
@@ -125,6 +126,8 @@ def reauth(force=False):
     except zaim_api.LoginRejected:
         renew_after = float('inf')
         raise
+    except requests.RequestException as e:
+        raise RuntimeError('cannot reach Zaim (%s)' % type(e).__name__) from e
     except RuntimeError:
         renew_after = time.time() + 3600
         raise
@@ -133,30 +136,23 @@ def reauth(force=False):
     return api
 
 def init_zaim(config):
-    # Zaim tokens last about 24 hours. With zaim.email and zaim.password in
-    # config.json the bot renews them itself; without, run ./auth.sh by hand.
+    # Zaim tokens last about 24 hours. The bot renews them itself when
+    # zaim.email and zaim.password are in config.json; without, run ./auth.sh.
+    # Whether the saved token still works is not checked here: Zaim being
+    # unreachable must not stop the bot answering Telegram. The keepalive
+    # checks it right after startup and renews it, and every Zaim call
+    # reports its own failure in the chat.
     try:
-        api = zaim_api.from_token(config['zaim']['consumer_key'],
-                                  config['zaim']['consumer_secret'])
-        r = api.verify()
+        return zaim_api.from_token(config['zaim']['consumer_key'],
+                                   config['zaim']['consumer_secret'])
     except FileNotFoundError:
-        r = {'error': True, 'message': 'no saved token'}
-    if r.get('error'):
         if not can_reauth():
-            sys.exit('Zaim token unusable (%s). Run ./auth.sh, or add '
-                     'zaim.email and zaim.password to config.json.'
-                     % r.get('message'))
-        logging.warning('Zaim token unusable (%s, %s), reauthorizing',
-                        r.get('message'), token_age())
+            sys.exit('No saved Zaim token. Run ./auth.sh, or add '
+                     'zaim.email and zaim.password to config.json.')
         try:
-            api = reauth()
+            return reauth()
         except RuntimeError as e:
             sys.exit('Automatic Zaim reauthorization failed: %s' % e)
-        r = api.verify()
-    me = r.get('me', {})
-    logging.info('Zaim account %s (%s), %d entries',
-                 me.get('id'), me.get('currency_code'), me.get('input_count', 0))
-    return api
 
 def token_age():
     try:
@@ -208,7 +204,7 @@ async def zaim_call(method, **kwargs):
 KEEPALIVE_SECONDS = 3600
 
 async def keepalive():
-    """Verify the token hourly.
+    """Verify the token at startup, then hourly.
 
     Renews a lapsed token in the background rather than during someone's
     entry. The token age logged on renewal also shows whether Zaim's expiry is
@@ -216,12 +212,12 @@ async def keepalive():
     it slides.
     """
     while True:
-        await asyncio.sleep(KEEPALIVE_SECONDS)
         r = await zaim_call('verify')
         if r.get('error'):
             logging.warning('Zaim keepalive failed: %s', r.get('message'))
         else:
             logging.debug('Zaim keepalive ok, token %s', token_age())
+        await asyncio.sleep(KEEPALIVE_SECONDS)
 
 REAUTH_HINT = ('Zaim rejected the request: %s\n'
                'If this is 401 the Zaim login expired and could not be '

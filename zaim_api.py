@@ -33,18 +33,28 @@ class Api:
 
     def _request(self, method, path, **kwargs):
         key = 'params' if method == 'GET' else 'data'
-        r = requests.request(method, BASE_URL + path, auth=self.auth,
-                             **{key: kwargs})
+        # Failures come back as {'error': True, 'message': ...}, the shape
+        # Zaim itself uses, so callers never see an exception for an outage.
+        try:
+            r = requests.request(method, BASE_URL + path, auth=self.auth,
+                                 **{key: kwargs})
+        except requests.RequestException as e:
+            return {'error': True,
+                    'message': 'cannot reach Zaim (%s)' % type(e).__name__}
         try:
             return r.json()
         except ValueError:
-            raise Exception(r.text)
+            return {'error': True,
+                    'message': 'HTTP %s, not JSON' % r.status_code}
 
     def get_request_token(self, callback_uri):
         auth = OAuth1(self.consumer_key, self.consumer_secret,
                       callback_uri=callback_uri)
         r = requests.post(BASE_URL + '/auth/request', auth=auth)
         request_token = dict(parse_qsl(r.text))
+        if 'oauth_token' not in request_token:
+            raise RuntimeError('Zaim gave no request token (HTTP %s)'
+                               % r.status_code)
         self.request_token = request_token['oauth_token']
         self.request_token_secret = request_token['oauth_token_secret']
         return request_token
