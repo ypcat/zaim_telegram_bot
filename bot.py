@@ -1,9 +1,8 @@
+#!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.14"
 # dependencies = [
 #     "python-telegram-bot>=22.8",
-#     "requests",
-#     "requests-oauthlib",
 # ]
 # ///
 
@@ -12,8 +11,6 @@ import datetime
 import json
 import os
 import re
-import sys
-import time
 import logging
 
 from telegram import BotCommand
@@ -21,8 +18,7 @@ from telegram.error import Conflict, NetworkError
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters)
 
-import requests
-import zaim_api
+import zaim_db
 
 logging.basicConfig(
         format='%(asctime)s %(levelname)-7s %(message)s',
@@ -103,133 +99,19 @@ def load_config():
     with open(os.path.join(os.path.dirname(__file__), 'config.json')) as f:
         return json.load(f)
 
-def can_reauth():
-    return bool(config['zaim'].get('email') and config['zaim'].get('password'))
-
-# Earliest time another renewal may be attempted. A rejected password stops
-# renewal until ./auth.sh writes a working token: logging in with it every
-# hour would only risk Zaim locking the account. Other failures wait an hour.
-renew_after = 0
-
-def reauth(force=False):
-    """Log in with the account password and save a fresh token. Blocking.
-
-    force: an explicit ./auth.sh, which ignores the pause below.
-    """
-    global renew_after
-    if not force and time.time() < renew_after:
-        raise RuntimeError('renewal paused after an earlier failure')
-    c = config['zaim']
-    try:
-        api = zaim_api.authorize_headless(c['consumer_key'], c['consumer_secret'],
-                                          c['email'], c['password'])
-    except zaim_api.LoginRejected:
-        renew_after = float('inf')
-        raise
-    except requests.RequestException as e:
-        raise RuntimeError('cannot reach Zaim (%s)' % type(e).__name__) from e
-    except RuntimeError:
-        renew_after = time.time() + 3600
-        raise
-    renew_after = 0
-    logging.info('Reauthorized with Zaim using the account password')
-    return api
-
-def init_zaim(config):
-    # Zaim tokens last about 24 hours. The bot renews them itself when
-    # zaim.email and zaim.password are in config.json; without, run ./auth.sh.
-    # Whether the saved token still works is not checked here: Zaim being
-    # unreachable must not stop the bot answering Telegram. The keepalive
-    # checks it right after startup and renews it, and every Zaim call
-    # reports its own failure in the chat.
-    try:
-        return zaim_api.from_token(config['zaim']['consumer_key'],
-                                   config['zaim']['consumer_secret'])
-    except FileNotFoundError:
-        if not can_reauth():
-            sys.exit('No saved Zaim token. Run ./auth.sh, or add '
-                     'zaim.email and zaim.password to config.json.')
-        try:
-            return reauth()
-        except RuntimeError as e:
-            sys.exit('Automatic Zaim reauthorization failed: %s' % e)
-
-def token_age():
-    try:
-        age = time.time() - os.path.getmtime(zaim_api.TOKEN_PATH)
-    except OSError:
-        return 'unknown age'
-    return '%.1fh old' % (age / 3600)
-
-def unauthorized(resp):
-    return (isinstance(resp, dict) and resp.get('error')
-            and '401' in str(resp.get('message')))
-
-def reload_token():
-    """The saved token, if ./auth.sh has written a working one since."""
-    global renew_after
-    try:
-        api = zaim_api.from_token(config['zaim']['consumer_key'],
-                                  config['zaim']['consumer_secret'])
-    except FileNotFoundError:
-        return None
-    if api.verify().get('error'):
-        return None
-    renew_after = 0
-    logging.info('Loaded a new Zaim token from %s', zaim_api.TOKEN_PATH)
-    return api
-
 async def zaim_call(method, **kwargs):
-    """Call the Zaim API; on a 401, reload or renew the token and retry."""
-    global z
-    resp = await asyncio.to_thread(getattr(z, method), **kwargs)
-    if unauthorized(resp):
-        fresh = await asyncio.to_thread(reload_token)
-        if fresh:
-            z = fresh
-            return await asyncio.to_thread(getattr(z, method), **kwargs)
-    if unauthorized(resp) and can_reauth() and time.time() >= renew_after:
-        logging.warning('Zaim token expired (%s), reauthorizing', token_age())
-        try:
-            z = await asyncio.to_thread(reauth)
-        except RuntimeError as e:
-            if not str(e).startswith('renewal paused'):
-                logging.error('Automatic Zaim reauthorization failed: %s%s', e,
-                              '; not retrying, run ./auth.sh'
-                              if renew_after == float('inf') else '')
-            return resp
-        resp = await asyncio.to_thread(getattr(z, method), **kwargs)
-    return resp
+    """Call the account book (zaim_db, Zaim API shaped) off the event loop."""
+    return await asyncio.to_thread(getattr(z, method), **kwargs)
 
-KEEPALIVE_SECONDS = 3600
-
-async def keepalive():
-    """Verify the token at startup, then hourly.
-
-    Renews a lapsed token in the background rather than during someone's
-    entry. The token age logged on renewal also shows whether Zaim's expiry is
-    fixed from issue or slides with use: if tokens poked hourly never expire,
-    it slides.
-    """
-    while True:
-        r = await zaim_call('verify')
-        if r.get('error'):
-            logging.warning('Zaim keepalive failed: %s', r.get('message'))
-        else:
-            logging.debug('Zaim keepalive ok, token %s', token_age())
-        await asyncio.sleep(KEEPALIVE_SECONDS)
-
-REAUTH_HINT = ('Zaim rejected the request: %s\n'
-               'If this is 401 the Zaim login expired and could not be '
-               'renewed. Run ./auth.sh on the server.')
+ERROR_HINT = 'Could not do that: %s'
 
 def who(update):
     return update.message.from_user.name
 
 def zaim_error(resp):
-    """Return a user-facing message if the Zaim call failed, else None."""
+    """Return a user-facing message if the call failed, else None."""
     if isinstance(resp, dict) and resp.get('error'):
-        return REAUTH_HINT % resp.get('message', resp['error'])
+        return ERROR_HINT % resp.get('message', resp['error'])
 
 async def usage(update, context):
     logging.info('%s /help', who(update))
@@ -413,10 +295,6 @@ async def post_init(application):
         [BotCommand(name, description) for name, description in COMMANDS])
     logging.info('Polling as @%s, published %s', application.bot.username,
                  ', '.join('/' + name for name, _ in COMMANDS))
-    # A plain asyncio task: Application.create_task warns when called before
-    # the app is running, and would not cancel the task on shutdown anyway.
-    global keepalive_task
-    keepalive_task = asyncio.create_task(keepalive())
 
 async def on_error(update, context):
     # A second poller (Conflict) or a network blip is routine: one line, not
@@ -426,32 +304,14 @@ async def on_error(update, context):
     else:
         logging.error('Unhandled error', exc_info=context.error)
 
-async def post_stop(application):
-    keepalive_task.cancel()
-
 def main():
     global config, z
     config = load_config()
-    if '--auth' in sys.argv:
-        # ./auth.sh: the password from config.json if present, else a browser.
-        # The running bot picks the new token up on its next 401.
-        if can_reauth():
-            try:
-                reauth(force=True)
-                print('Logged in with the password from config.json. Done.')
-                return
-            except RuntimeError as e:
-                print('Password login failed: %s' % e)
-                print('Falling back to logging in with a browser.\n')
-        zaim_api.authorize(config['zaim']['consumer_key'],
-                           config['zaim']['consumer_secret'])
-        return
-    z = init_zaim(config)
+    z = zaim_db.Api()
     logging.info('%d category names in %d categories', len(name_to), len(canonical))
     application = (ApplicationBuilder()
                    .token(config['telegram']['token'])
                    .post_init(post_init)
-                   .post_stop(post_stop)
                    .build())
 
     application.add_error_handler(on_error)

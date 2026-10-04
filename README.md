@@ -1,35 +1,27 @@
 # zaim_telegram_bot
 
-Telegram bot that logs expenses to [Zaim](https://zaim.net/).
+Telegram bot that logs expenses to a local account book. It started as a
+front end for [Zaim](https://zaim.net/); since Zaim's API blocked it in
+October 2026 the book lives in SQLite (`zaim.db`), behind the same calls and
+response shapes as the Zaim API (`zaim_db.py`). Single user, no login.
 
 ## Setup
 
 ```sh
-cp config.json.sample config.json   # fill in telegram token + zaim consumer key/secret
-./auth.sh                           # one time
+cp config.json.sample config.json   # fill in the telegram token
+./import_zaim.py 20261004_zaim.jsonl  # Zaim export into zaim.db
 ```
 
-Zaim tokens expire after about a day, whatever the approval page says. Put
-`email` and `password` under `zaim` in `config.json` and the bot renews the
-token itself at startup and whenever Zaim answers 401.
-
-**If the bot says the Zaim login expired, run `./auth.sh`.** That's the only
-command to remember. It tries the password from `config.json`, and if Zaim
-rejects it, prints why and falls back to a browser login (open the URL,
-approve, paste the code). The running bot picks up the new token by itself;
-no restart needed.
-
-After a rejected password the bot stops retrying, so it can't get the account
-locked, until `./auth.sh` succeeds.
+`./import_zaim.py` with no argument imports the newest `*_zaim.jsonl` here.
+It is idempotent: entries already in the book (same Zaim id) are skipped,
+including ones cancelled since, so rerunning it or importing overlapping
+dumps is harmless, with the bot running or not.
 
 ## Run
 
 ```sh
 ./run.sh
 ```
-
-Renews an expired token on its own if `zaim.email`/`zaim.password` are set;
-otherwise refuses to start and tells you to run `./auth.sh`.
 
 ## Usage
 
@@ -81,11 +73,9 @@ and it has left the unit's cgroup. Never run the bot through `uv run` under
 systemd.
 
 Quiet is normal: three lines at startup, then one per action.
-`Environment=LOG_LEVEL=DEBUG` adds per-message detail and the hourly Zaim
-keepalive.
+`Environment=LOG_LEVEL=DEBUG` adds per-message detail.
 
 ## Files
 
-- `oauth_token.json` — current Zaim access token, rewritten on renewal. Gitignored, mode 0600.
+- `zaim.db` — the account book (SQLite, table `money` with Zaim's columns). Gitignored; back it up.
 - `cats.json` — categories and aliases. First name in each list is the canonical one shown in replies.
-- `dump.py` — export all Zaim records to jsonl.

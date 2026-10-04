@@ -73,3 +73,5 @@ erl_crash.dump
 state.json
 *.tmp
 zaim_auth_debug.html
+zaim.db
+zaim.db-journal
