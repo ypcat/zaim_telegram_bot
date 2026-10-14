@@ -5,6 +5,7 @@
 
 import datetime
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -75,13 +76,13 @@ PARSED = [
         'TWD total 973 = sum ✓',
     ]),
     ('cht_bill', 'cht_bill', (27, 7), [
-        '⚠️ 中華電信 台北 2026-10',
+        '⚠️ 中華電信 541 2026-10',
         '✗ 1 not booked, 513',
         '10/27 513 台北 電信費 09/01-09/30',
         'total 513 = 499 + 14 ✓',
     ]),
     ('cht_bill_project', 'cht_bill', (25, 7), [
-        '⚠️ 中華電信 台北 2026-09',
+        '⚠️ 中華電信 506 2026-09',
         '✗ 1 not booked, 926',
         '10/05 926 台北 電信費 08/11-09/10',
         'total 926 = 926 ✓',
@@ -164,11 +165,18 @@ PARSED = [
     ]),
 ]
 
+# The masked phone numbers of the 中華電信 bills, put back as fakes.
+PHONES = {'cht_bill': '0900000541', 'cht_bill_project': 'Y000506'}
+
 class Parsers(unittest.TestCase):
     def test_parsed(self):
         for name, parser, window, expected in PARSED:
             with self.subTest(name):
-                doc = getattr(bills, parser)(fixture(name + '.txt'))
+                text = fixture(name + '.txt')
+                if name in PHONES:
+                    text = re.sub(r'(代 繳\s+\d+\s+)<\w+>',
+                                  r'\g<1>' + PHONES[name], text, count=1)
+                doc = getattr(bills, parser)(text)
                 self.assertEqual(doc.window, window)
                 self.assertEqual(bills.show([doc], {}).splitlines(), expected)
 

@@ -366,11 +366,14 @@ def cht_bill(text):
     """中華電信 電信費用通知單: one bill per phone number, paid by autopay."""
     office, y, mo = find(r'(\S+)營運處(\d+)年(\d+)月繳費通知', text,
                          '繳費通知').groups()
-    m = find(r'\$([\d,]+)\s+(\d+)/(\d+)/(\d+)', text, '應繳總金額')
-    total, due = number(m[1]), roc(*m.groups()[1:])
+    # 應繳總金額 繳費期限 繳費方式 營運處代號 用戶號碼
+    m = find(r'(?m)\$([\d,]+)\s+(\d+)/(\d+)/(\d+).*\s(\S+)[ \t]*$', text,
+             '應繳總金額')
+    total, due = number(m[1]), roc(*m.groups()[1:4])
+    phone = m[5][-3:]   # last 3 of the phone number names the bill
     m = find(r'計費期間：(\d+)/(\d+)/(\d+)至(\d+)/(\d+)/(\d+)', text, '計費期間')
     first, last = roc(*m.groups()[:3]), roc(*m.groups()[3:])
-    doc = Doc('中華電信 %s %d-%02d' % (office, int(y) + 1911, int(mo)), [],
+    doc = Doc('中華電信 %s %d-%02d' % (phone, int(y) + 1911, int(mo)), [],
               ((due - last).days, 7))
     doc.lines.append(Line(due, '%s 電信費 %s-%s' % (
         office, first.strftime('%m/%d'), last.strftime('%m/%d')), total,
