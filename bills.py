@@ -26,6 +26,7 @@ import os
 import re
 import sqlite3
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,6 +203,7 @@ class Line:
     desc: str
     amount: float       # in the line's currency; whole numbers for TWD
     kind: str           # 'spend', 'not_spending' or 'foreign'
+    currency: str = 'TWD'
     match: tuple = None  # the book row: (id, date, genre_id, place)
 
 @dataclasses.dataclass
@@ -227,10 +229,9 @@ def check_total(doc, label, start, lines, end):
     """Statement total check: start + sum of lines must equal end."""
     got = round(start + sum(l.amount for l in lines), 2)
     if got == end:
-        doc.totals.append(('%s total %s = sum of lines ✓' % (label, money(end)),
-                           True))
+        doc.totals.append(('%s total %s = sum ✓' % (label, money(end)), True))
     else:
-        doc.totals.append(('%s total %s ≠ sum of lines %s ✗'
+        doc.totals.append(('%s total %s ≠ sum %s ✗'
                            % (label, money(end), money(got)), False))
 
 def sinopac_card(text):
@@ -261,13 +262,14 @@ def sinopac_card(text):
         year = closing.year - (int(month) > closing.month)
         amount = number(amount)
         if section == '日圓':
-            kind = 'foreign'
-            desc += ' ¥' + money(amount) + (
-                ' (%s %s)' % (cur, money(number(orig))) if cur else '')
+            kind, currency = 'foreign', 'JPY'
+            if cur:
+                desc += ' (%s %s)' % (cur, money(number(orig)))
         else:
             kind = 'spend' if amount > 0 else 'not_spending'
+            currency = 'TWD'
         line = Line(datetime.date(year, int(month), int(day)), desc, amount,
-                    kind)
+                    kind, currency)
         lines[section].append(line)
         doc.lines.append(line)
     for cur, label in (('臺幣', 'TWD'), ('日圓', 'JPY')):
@@ -366,26 +368,43 @@ def genres():
     return {int(g): names[0] for kind in cats.values()
             for g, names in kind.items()}
 
+SYMBOL = {'TWD': '', 'JPY': '¥', 'USD': '$'}
+
 def show(docs, names):
-    """A bill, line by line: ✓ booked (with the book row), ✗ not booked,
-    - not spending, ¥ foreign currency (not checked)."""
+    """A bill in three groups, each with its count and sum: not booked;
+    booked, with the book row (its date only when it differs, category,
+    place); other (not spending, foreign currency). Short lines for a phone;
+    the amount column lines up in a monospace font."""
     out = []
     for d in docs:
+        def amount(l):
+            return SYMBOL.get(l.currency, l.currency + ' ') + money(l.amount)
+        width = max((len(amount(l)) for l in d.lines), default=0)
+        def row(l):
+            return '%s %*s %s' % (l.date.strftime('%m/%d'), width, amount(l),
+                                  unicodedata.normalize('NFKC', l.desc))
+        def group(head, lines):
+            if lines:
+                total = sum(l.amount for l in lines if l.currency == 'TWD')
+                out.append('%s %d %s, %s' % (head[0], len(lines), head[1:],
+                                             money(total)))
+        missing = d.not_booked()
+        booked = [l for l in d.lines if l.match]
+        other = [l for l in d.lines if l.kind != 'spend']
         out.append('%s %s' % ('✅' if d.ok() else '⚠️', d.title))
-        for l in d.lines:
-            if l.kind == 'foreign':
-                out.append('  ¥ %s %10s  %s' % (l.date.strftime('%m/%d'), '',
-                                                l.desc))
-                continue
-            row = '  %s %s %10s  %s' % (
-                {'spend': '✓' if l.match else '✗', 'not_spending': '-'}[l.kind],
-                l.date.strftime('%m/%d'), money(l.amount), l.desc)
-            if l.match:
-                _, date, genre, place = l.match
-                row += '  ← book %s %s %s' % (date[5:].replace('-', '/'),
-                                              names.get(genre, '?'), place)
-            out.append(row)
-        out += ['  ' + t for t, _ in d.totals]
+        group('✗not booked', missing)
+        out += [row(l) for l in missing]
+        group('✓booked', booked)
+        for l in booked:
+            _, date, genre, place = l.match
+            when = ('' if date == l.date.isoformat()
+                    else date[5:].replace('-', '/') + ' ')
+            out.append('%s ← %s%s' % (row(l), when, ' '.join(
+                filter(None, [names.get(genre, '?'), place]))))
+        if other:
+            out.append('- %d other' % len(other))
+            out += [row(l) for l in other]
+        out += [t for t, _ in d.totals]
     return '\n'.join(out)
 
 def main():
