@@ -2,22 +2,27 @@
 # /// script
 # requires-python = ">=3.14"
 # dependencies = [
+#     "pdfplumber",
 #     "python-telegram-bot>=22.8",
 # ]
 # ///
 
 import asyncio
 import datetime
+import html
 import json
 import os
 import re
 import logging
+import time
 
-from telegram import BotCommand
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Conflict, NetworkError
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, filters)
+    ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler,
+    filters)
 
+import bills
 import zaim_db
 
 logging.basicConfig(
@@ -42,6 +47,7 @@ COMMANDS = [
     ('month', "This month's total"),
     ('alias', 'Add an alias, e.g. /alias 買菜=食物'),
     ('unalias', 'Remove aliases, e.g. /unalias 買菜 咖啡'),
+    ('bills', 'Check inbox bills against the book'),
 ]
 
 USAGE = '''Log an entry by typing:  <category> <place> <amount>
@@ -56,7 +62,8 @@ Each reply carries a /cancel_<id> link to undo that entry.
 /cats   list all categories and their aliases
 /month  this month's total
 /alias  add an alias, e.g. /alias 買菜=食物
-/unalias  remove aliases, e.g. /unalias 買菜 咖啡'''
+/unalias  remove aliases, e.g. /unalias 買菜 咖啡
+/bills  check the bill mails in the Gmail inbox against the book'''
 
 PARSE_HINT = ("Couldn't parse that. Expected: <category> <place> <amount>\n"
               'e.g. 午餐 摩斯 120   -   /help for the full syntax')
@@ -265,6 +272,92 @@ async def month(update, context):
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
+# /bills. Bill text is private, so only the chats in config bills_chats get
+# it. The docs of the last /bills stay in bot_data['bills'] by message id:
+# tap a number for its detail, checked against the book again. One mail is
+# shown in detail at once. To check again, send /bills again.
+
+def bills_allowed(chat_id):
+    return chat_id in config.get('bills_chats', [])
+
+def pre(text):
+    return '<pre>%s</pre>' % html.escape(text)
+
+def bills_list(found):
+    """One row per document, numbered by mail, and a button per mail."""
+    rows = []
+    for n, (_, docs) in enumerate(found, 1):
+        for d in docs:
+            missing = len(d.not_booked())
+            rows.append('%d %s %s%s' % (n, '✅' if d.ok() else '⚠️', d.title,
+                                        ' ✗%d' % missing if missing else ''))
+    numbers = [InlineKeyboardButton(str(n), callback_data='bill:' + m)
+               for n, (m, _) in enumerate(found, 1)]
+    keys = [numbers[i:i + 6] for i in range(0, len(numbers), 6)]
+    return (pre('\n'.join(rows) or 'No bills in the inbox.'),
+            InlineKeyboardMarkup(keys))
+
+async def bills_command(update, context):
+    chat_id = update.effective_chat.id
+    if not bills_allowed(chat_id):
+        logging.info('%s /bills refused in chat %s', update.effective_user.name,
+                     chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id, text='Not allowed. To allow it, add chat id %s'
+                                  ' to bills_chats in config.json.' % chat_id)
+        return
+    logging.info('%s /bills', update.effective_user.name)
+    msg = await context.bot.send_message(
+        chat_id=chat_id, text=pre('Reading the inbox, about 30 s ...'),
+        parse_mode='HTML')
+    # Progress from the worker thread: edit the message at most every 3 s.
+    loop, edits, last = asyncio.get_running_loop(), [], [0.0]
+    def progress(i, n):
+        if time.monotonic() - last[0] >= 3:
+            last[0] = time.monotonic()
+            edits.append(asyncio.run_coroutine_threadsafe(msg.edit_text(
+                pre('Reading mail %d of %d ...' % (i, n)), parse_mode='HTML'),
+                loop))
+    try:
+        try:
+            found = await asyncio.to_thread(bills.bills, progress)
+        finally:
+            # A progress edit still in flight must not overwrite the result.
+            await asyncio.gather(*map(asyncio.wrap_future, edits),
+                                 return_exceptions=True)
+    except bills.Error as e:
+        await msg.edit_text('Could not check the bills: %s' % e)
+        return
+    except Exception:
+        await msg.edit_text('Could not check the bills; see the bot log.')
+        raise
+    context.bot_data['bills'] = dict(found)
+    logging.info('%d bills, %d not ok', len(found),
+                 sum(not all(d.ok() for d in docs) for _, docs in found))
+    if len(found) == 1:
+        await msg.edit_text(pre(bills.show(found[0][1], bills.genres())),
+                            parse_mode='HTML')
+        return
+    text, keys = bills_list(found)
+    await msg.edit_text(text, parse_mode='HTML', reply_markup=keys)
+
+async def bill_button(update, context):
+    query = update.callback_query
+    if not bills_allowed(update.effective_chat.id):
+        await query.answer('Not allowed.')
+        return
+    msg_id = query.data[5:]
+    docs = context.bot_data.get('bills', {}).get(msg_id)
+    if docs is None:
+        await query.answer('Not in the last /bills; run /bills again.',
+                           show_alert=True)
+        return
+    await query.answer()
+    await asyncio.to_thread(bills.check, [(msg_id, docs)])
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, parse_mode='HTML',
+        text=pre(bills.show(docs, bills.genres())))
+
 def parse(text):
     m = entry_pattern.match(text)
     if not m:
@@ -320,6 +413,8 @@ def main():
     application.add_handler(CommandHandler('month', month))
     application.add_handler(CommandHandler('alias', alias))
     application.add_handler(CommandHandler('unalias', unalias))
+    application.add_handler(CommandHandler('bills', bills_command))
+    application.add_handler(CallbackQueryHandler(bill_button, pattern='^bill:'))
     application.add_handler(MessageHandler(filters.Regex(r'/cancel_(\d+)'), cancel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
 

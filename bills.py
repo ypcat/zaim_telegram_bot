@@ -47,6 +47,7 @@ GMAIL = 'https://gmail.googleapis.com/gmail/v1/users/me'
 SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 # A "Web application" client accepts only exactly-registered redirect URIs.
 PORT = 8130
+TIMEOUT = 30        # seconds for one HTTP call; a stalled call is an Error
 QUEUE = 'in:inbox is:unread'
 
 # pdfminer warns about font metrics on most bank PDFs.
@@ -62,11 +63,13 @@ def config():
 def post_form(url, fields):
     data = urllib.parse.urlencode(fields).encode()
     try:
-        with urllib.request.urlopen(url, data) as r:
+        with urllib.request.urlopen(url, data, TIMEOUT) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         # Google's error body names the reason (invalid_grant, ...); no secrets.
         raise Error('Google token endpoint: %s %s' % (e.code, e.read().decode()))
+    except OSError as e:    # no network, timeout
+        raise Error('Google token endpoint: %s' % e)
 
 # ── Gmail ──────────────────────────────────────────────────────────────────
 
@@ -127,10 +130,12 @@ class Gmail:
         req = urllib.request.Request(
             url, headers={'Authorization': 'Bearer ' + self.token})
         try:
-            with urllib.request.urlopen(req) as r:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             raise Error('Gmail API: %s %s' % (e.code, e.reason))
+        except OSError as e:    # no network, timeout
+            raise Error('Gmail API: %s' % e)
 
     def queue(self):
         """Ids of the messages in the queue, newest first."""
@@ -647,6 +652,7 @@ def reconcile(db, doc):
     used = set()
     before, after = (datetime.timedelta(days=d) for d in doc.window)
     for line in sorted(doc.lines, key=lambda l: l.date):
+        line.match = None
         if line.kind != 'spend':
             continue
         rows = db.execute(
@@ -662,18 +668,29 @@ def reconcile(db, doc):
             used.add(best[0])
             line.match = best
 
-def bills():
-    """The bills in the queue, reconciled: [(message id, [Doc])]."""
+def bills(progress=None):
+    """The bills in the queue, reconciled: [(message id, [Doc])].
+    progress(i, n) is called before mail i of n is read."""
     gmail = Gmail()
-    out = [(m, docs) for m in gmail.queue() if (docs := read_mail(gmail, m))]
+    queue = gmail.queue()
+    found = []
+    for i, m in enumerate(queue, 1):
+        if progress:
+            progress(i, len(queue))
+        if docs := read_mail(gmail, m):
+            found.append((m, docs))
+    return check(found)
+
+def check(found):
+    """Reconcile [(message id, [Doc])] against the book again, in place."""
     db = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
     try:
-        for _, docs in out:
+        for _, docs in found:
             for doc in docs:
                 reconcile(db, doc)
     finally:
         db.close()
-    return out
+    return found
 
 # ── Output ─────────────────────────────────────────────────────────────────
 
