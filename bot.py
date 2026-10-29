@@ -12,11 +12,12 @@ import json
 import os
 import re
 import logging
+import socket
 
-from telegram import BotCommand
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Conflict, NetworkError
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
+    ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler,
     filters)
 
 import zaim_db
@@ -41,8 +42,10 @@ COMMANDS = [
     ('help', 'Show usage'),
     ('cats', 'List categories and aliases'),
     ('month', "This month's total"),
+    ('list', 'Latest entries, page by page'),
     ('alias', 'Add an alias, e.g. /alias 買菜=食物'),
     ('unalias', 'Remove aliases, e.g. /unalias 買菜 咖啡'),
+    ('host', 'Name of the server running the bot'),
 ]
 
 USAGE = '''Log an entry by typing:  <category> <place> <amount>
@@ -56,8 +59,10 @@ Each reply carries a /cancel_<id> link to undo that entry.
 /help   this message
 /cats   list all categories and their aliases
 /month  this month's total
+/list   latest entries, page by page
 /alias  add an alias, e.g. /alias 買菜=食物
-/unalias  remove aliases, e.g. /unalias 買菜 咖啡'''
+/unalias  remove aliases, e.g. /unalias 買菜 咖啡
+/host   name of the server running the bot'''
 
 PARSE_HINT = ("Couldn't parse that. Expected: <category> <place> <amount>\n"
               'e.g. 午餐 摩斯 120   -   /help for the full syntax')
@@ -266,6 +271,53 @@ async def month(update, context):
     reply_text = f'{today.year}-{today.month:02d}: {amount}'
     await context.bot.send_message(chat_id=update.message.chat_id, text=reply_text)
 
+async def host(update, context):
+    logging.info('%s /host', who(update))
+    await context.bot.send_message(chat_id=update.message.chat_id,
+                                   text=socket.gethostname())
+
+# /list. Newest entries first, LIST_PAGE per page. The buttons page through
+# the book by editing the same message. Payments carry a /cancel_<id> link.
+LIST_PAGE = 10
+
+async def list_page(page):
+    """Return (text, keyboard) for page `page`; page 1 is the newest."""
+    r = await zaim_call('money', limit=LIST_PAGE, page=page)
+    err = zaim_error(r)
+    if err:
+        return err, None
+    rows = []
+    for m in r['money']:
+        cid = m['genre_id'] if m['mode'] == 'payment' else m['category_id']
+        row = '%s %s %s $%d' % (m['date'], canonical.get(str(cid), cid),
+                                m['place'], m['amount'])
+        if m['mode'] == 'payment':
+            row += ' /cancel_%d' % m['id']
+        rows.append(row)
+    keys = []
+    if page > 1:
+        keys.append(InlineKeyboardButton('◀ Newer',
+                                         callback_data='list:%d' % (page - 1)))
+    if len(rows) == LIST_PAGE:
+        keys.append(InlineKeyboardButton('Older ▶',
+                                         callback_data='list:%d' % (page + 1)))
+    return ('\n'.join(rows) or 'No entries.',
+            InlineKeyboardMarkup([keys]) if keys else None)
+
+async def list_entries(update, context):
+    logging.info('%s /list', who(update))
+    text, keys = await list_page(1)
+    await context.bot.send_message(chat_id=update.message.chat_id, text=text,
+                                   reply_markup=keys)
+
+async def list_button(update, context):
+    query = update.callback_query
+    page = int(query.data[5:])
+    logging.info('%s /list page %d', query.from_user.name, page)
+    text, keys = await list_page(page)
+    await query.answer()
+    await query.edit_message_text(text, reply_markup=keys)
+
 def parse(text):
     m = entry_pattern.match(text)
     if not m:
@@ -321,6 +373,9 @@ def main():
     application.add_handler(CommandHandler('month', month))
     application.add_handler(CommandHandler('alias', alias))
     application.add_handler(CommandHandler('unalias', unalias))
+    application.add_handler(CommandHandler('host', host))
+    application.add_handler(CommandHandler('list', list_entries))
+    application.add_handler(CallbackQueryHandler(list_button, pattern=r'^list:\d+$'))
     application.add_handler(MessageHandler(filters.Regex(r'/cancel_(\d+)'), cancel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
 
